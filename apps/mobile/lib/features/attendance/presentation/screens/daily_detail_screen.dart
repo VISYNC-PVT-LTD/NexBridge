@@ -57,6 +57,8 @@ class DailyDetailScreen extends ConsumerWidget {
                           ]),
                           if (e.value.checkIn != null) Text('In:  ${_fmtFull(e.value.checkIn)}'),
                           if (e.value.checkOut != null) Text('Out: ${_fmtFull(e.value.checkOut)}'),
+                          if (e.value.checkOut == null && e.value.missedCheckout)
+                            const Text('Out: — missed (no check-out within 24 h)', style: TextStyle(color: Color(0xFFDC2626))),
                           if (e.value.durationMinutes != null) Text('Duration: ${e.value.durationMinutes! ~/ 60}h ${e.value.durationMinutes! % 60}m', style: const TextStyle(color: Colors.grey)),
                           if (e.value.checkInLocation != null) ...[
                             const SizedBox(height: 4),

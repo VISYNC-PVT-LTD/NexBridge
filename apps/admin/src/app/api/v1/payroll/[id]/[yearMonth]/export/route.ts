@@ -3,7 +3,7 @@ import { format } from 'date-fns';
 import { PayrollService } from '@services/PayrollService';
 import { AppError } from '@services/AuthService';
 import { getAuthUser, AuthError } from '@mw/requireAuth';
-import { assertRole } from '@mw/requireRole';
+import { assertAttendanceAdmin } from '@mw/requireRole';
 import { apiError } from '@lib/utils/api-response';
 
 export const dynamic = 'force-dynamic';
@@ -19,7 +19,7 @@ export async function GET(
     throw err;
   }
 
-  try { assertRole(payload, 'admin'); }
+  try { assertAttendanceAdmin(payload); }
   catch (err) {
     if (err instanceof AppError) return apiError(err.code, err.message, err.httpStatus);
     throw err;

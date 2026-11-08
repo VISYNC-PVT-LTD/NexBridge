@@ -34,6 +34,10 @@ export interface IAttendanceDay extends Document {
 
   regularizationRequestId?: mongoose.Types.ObjectId;
   isRegularized: boolean;
+  /** True while a 24-hour missed check-out on this day awaits regularization/leave. */
+  hasUnresolvedMissedCheckout?: boolean;
+  /** The session that missed its check-out (kept for audit even after resolution). */
+  missedCheckoutSessionId?: mongoose.Types.ObjectId;
 
   createdAt: Date;
   updatedAt: Date;
@@ -63,6 +67,8 @@ const AttendanceDaySchema = new Schema<IAttendanceDay>(
 
     regularizationRequestId: { type: Schema.Types.ObjectId, ref: 'RegularizationRequest' },
     isRegularized:           { type: Boolean, required: true, default: false },
+    hasUnresolvedMissedCheckout: { type: Boolean, default: false },
+    missedCheckoutSessionId:     { type: Schema.Types.ObjectId, ref: 'AttendanceSession' },
   },
   { timestamps: true },
 );
@@ -71,6 +77,7 @@ AttendanceDaySchema.index({ employeeId: 1, dateString: 1 }, { unique: true });
 AttendanceDaySchema.index({ employeeId: 1, status: 1 });
 AttendanceDaySchema.index({ employeeId: 1, year: 1, month: 1 });
 AttendanceDaySchema.index({ dateString: 1 });
+AttendanceDaySchema.index({ employeeId: 1, hasUnresolvedMissedCheckout: 1, dateString: -1 });
 
 export const AttendanceDay: Model<IAttendanceDay> =
   (mongoose.models['AttendanceDay'] as Model<IAttendanceDay>) ??

@@ -1,7 +1,12 @@
 name: CI
 on:
   pull_request:
-    branches: [main, develop]
+    # The repository's default branch is `master`; main/develop kept for compatibility.
+    branches: [master, main, develop]
+  push:
+    branches: [master]
+permissions:
+  contents: read
 jobs:
   admin:
     name: Admin lint + typecheck + test
@@ -15,14 +20,19 @@ jobs:
         with:
           node-version: '22'
           cache: 'npm'
-      - run: npm ci --workspace=apps/admin --workspace=packages/types
+      # Lockfile install with lifecycle scripts disabled.
+      - run: npm ci --ignore-scripts --workspace=apps/admin --workspace=packages/types
       - run: npm run lint
       - run: npm run typecheck
-      - name: Test (stub — no real DB)
+      # No secrets are passed to tests. jest.env.ts replaces every DB / Redis /
+      # email / Firebase setting with inert dummies and jest.network-guard.ts
+      # blocks all outbound connections, so tests cannot reach real services.
+      # Fetch the official MongoDB server binary (fastdl.mongodb.org) into the
+      # mongodb-memory-server cache BEFORE the tests, because the test network
+      # guard blocks all downloads during the run.
+      - name: Prefetch MongoDB binary for isolated integration tests
+        run: node -e "require('mongodb-memory-server').MongoMemoryReplSet.create({replSet:{count:1}}).then(r=>r.stop())"
+      - name: Test (isolated — mocked integrations + throw-away replica set, network blocked)
         run: npm run test:ci
         env:
-          MONGODB_URI: ${{ secrets.TEST_MONGODB_URI }}
-          JWT_SECRET: test-secret-min-64-chars-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
-          JWT_REFRESH_SECRET: test-refresh-secret-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
-          UPSTASH_REDIS_REST_URL: ${{ secrets.TEST_UPSTASH_URL }}
-          UPSTASH_REDIS_REST_TOKEN: ${{ secrets.TEST_UPSTASH_TOKEN }}
+          RUN_DB_INTEGRATION: '1'

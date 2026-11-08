@@ -42,11 +42,19 @@ export async function tryRefresh(): Promise<boolean> {
         method: 'POST',
         credentials: 'include',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ refreshToken: _refreshToken, sessionId: _sessionId }),
+        // Empty body: the server uses the HttpOnly __rt cookie, which is the
+        // single, always-current copy (the proxy may have rotated the token
+        // since this tab stored its sessionStorage copy).
+        body: JSON.stringify({}),
       });
       if (!res.ok) return false;
-      const json = (await res.json()) as { data?: { accessToken?: string } };
-      if (json.data?.accessToken) { accessToken = json.data.accessToken; return true; }
+      const json = (await res.json()) as { data?: { accessToken?: string; refreshToken?: string } };
+      if (json.data?.accessToken) {
+        accessToken = json.data.accessToken;
+        // Refresh tokens rotate on every refresh — keep the new one.
+        if (json.data.refreshToken && _sessionId) setSessionCredentials(json.data.refreshToken, _sessionId);
+        return true;
+      }
       return false;
     } catch { return false; }
     finally { refreshing = null; }

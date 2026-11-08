@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { jwtVerify, errors as joseErrors } from 'jose';
+import { verifyAccessToken } from '@lib/auth/jwt';
 import { WORK_DESK_ROLES, ATTENDANCE_ADMIN_ROLES } from '@constants/roles';
 import type { UserRole } from '@app-types/enums';
 
@@ -50,29 +50,16 @@ export const config = {
   matcher: ['/((?!_next/static|_next/image|favicon\\.ico|cron|admin\\/cron|health).*)'],
 };
 
-async function verifyJwt(token: string) {
-  const secret = new TextEncoder().encode(process.env.JWT_SECRET!);
-  try {
-    const { payload } = await jwtVerify(token, secret);
-    return payload;
-  } catch (err) {
-    // During key rotation, accept tokens signed with the previous secret
-    const prevSecret = process.env.JWT_SECRET_PREVIOUS;
-    if (
-      prevSecret &&
-      (err instanceof joseErrors.JWSSignatureVerificationFailed ||
-        err instanceof joseErrors.JWTExpired)
-    ) {
-      const prevKey = new TextEncoder().encode(prevSecret);
-      const { payload } = await jwtVerify(token, prevKey);
-      return payload;
-    }
-    throw err;
-  }
-}
+// Shared with route handlers: previous key only with an explicit, short expiry
+// and never for expired tokens (see lib/auth/jwt.ts).
+const verifyJwt = verifyAccessToken;
+
+const REFRESH_TOKEN_TTL_SECONDS = 30 * 24 * 60 * 60;
 
 // __rt cookie value is `${sessionId}:${refreshToken}` — both hex strings, ':' is a safe separator.
-async function attemptInlineRefresh(request: NextRequest): Promise<string | null> {
+async function attemptInlineRefresh(
+  request: NextRequest,
+): Promise<{ accessToken: string; rtCookie: string | null } | null> {
   const rt = request.cookies.get('__rt')?.value;
   if (!rt) return null;
   const sep = rt.indexOf(':');
@@ -88,8 +75,14 @@ async function attemptInlineRefresh(request: NextRequest): Promise<string | null
       body: JSON.stringify({ refreshToken, sessionId }),
     });
     if (!res.ok) return null;
-    const json = (await res.json()) as { data?: { accessToken?: string } };
-    return json.data?.accessToken ?? null;
+    const json = (await res.json()) as { data?: { accessToken?: string; refreshToken?: string } };
+    if (!json.data?.accessToken) return null;
+    // Refresh tokens rotate: the server-side fetch's Set-Cookie never reaches
+    // the browser, so forward the new token into the __rt cookie ourselves.
+    return {
+      accessToken: json.data.accessToken,
+      rtCookie: json.data.refreshToken ? `${sessionId}:${json.data.refreshToken}` : null,
+    };
   } catch {
     return null;
   }
@@ -163,8 +156,9 @@ export async function proxy(request: NextRequest) {
   } catch {
     // Access token invalid/expired — attempt one inline refresh via the
     // HttpOnly refresh cookie before falling back to login/401.
-    const newAccessToken = await attemptInlineRefresh(request);
-    if (newAccessToken) {
+    const refreshed = await attemptInlineRefresh(request);
+    if (refreshed) {
+      const newAccessToken = refreshed.accessToken;
       try {
         const payload = await verifyJwt(newAccessToken);
         const denied = evaluateAuthorized(payload, pathname, isApi, request.url);
@@ -176,6 +170,15 @@ export async function proxy(request: NextRequest) {
           secure: process.env.NODE_ENV === 'production',
           maxAge: ACCESS_TOKEN_TTL_SECONDS,
         });
+        if (refreshed.rtCookie) {
+          response.cookies.set('__rt', refreshed.rtCookie, {
+            httpOnly: true,
+            sameSite: 'strict',
+            path: '/',
+            secure: process.env.NODE_ENV === 'production',
+            maxAge: REFRESH_TOKEN_TTL_SECONDS,
+          });
+        }
         return response;
       } catch {
         // fall through to the redirect/401 below

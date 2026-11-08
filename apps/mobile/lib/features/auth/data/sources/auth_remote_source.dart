@@ -44,10 +44,13 @@ class AuthRemoteSource {
   Future<Map<String, dynamic>> changePassword({
     required String currentPassword,
     required String newPassword,
+    String? sessionId,
   }) async {
     final response = await _dio.patch(ApiEndpoints.changePassword, data: {
       'currentPassword': currentPassword,
       'newPassword': newPassword,
+      // Lets the server keep THIS device signed in and revoke the others.
+      if (sessionId != null && sessionId.isNotEmpty) 'sessionId': sessionId,
     });
     return response.data as Map<String, dynamic>;
   }

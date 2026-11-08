@@ -20,6 +20,9 @@ class AttendanceSession {
   final bool isRemote;
   final String? remoteSource;
   final String? checkInAddress;
+  /// True when the session passed its 24-hour check-out window without a
+  /// check-out. No punch-out exists for it (checkOut stays null).
+  final bool missedCheckout;
 
   const AttendanceSession({
     this.checkIn,
@@ -30,6 +33,7 @@ class AttendanceSession {
     this.isRemote = false,
     this.remoteSource,
     this.checkInAddress,
+    this.missedCheckout = false,
   });
 
   factory AttendanceSession.fromJson(Map<String, dynamic> json) {
@@ -43,6 +47,7 @@ class AttendanceSession {
       isRemote: json['isRemote'] as bool? ?? false,
       remoteSource: json['remoteSource'] as String?,
       checkInAddress: json['checkInAddress'] as String?,
+      missedCheckout: json['missedCheckout'] as bool? ?? false,
     );
   }
 }
@@ -68,6 +73,9 @@ class TodayAttendance {
   final bool forgotCheckout;
   final StaleSession? staleSession;
   final String? currentSessionStart;
+  /// checkIn + 24 h. At this instant the timer resets to 00:00:00 and the app
+  /// re-syncs with the server (the session becomes a missed check-out).
+  final String? currentSessionDeadline;
   final List<AttendanceSession> sessions;
   final int totalMinutesToday;
 
@@ -78,6 +86,7 @@ class TodayAttendance {
     this.forgotCheckout = false,
     this.staleSession,
     this.currentSessionStart,
+    this.currentSessionDeadline,
     required this.sessions,
     required this.totalMinutesToday,
   });
@@ -91,6 +100,7 @@ class TodayAttendance {
       forgotCheckout: json['forgotCheckout'] as bool? ?? false,
       staleSession: staleJson != null ? StaleSession.fromJson(staleJson) : null,
       currentSessionStart: json['currentSessionStart'] as String?,
+      currentSessionDeadline: json['currentSessionDeadline'] as String?,
       sessions: (json['sessions'] as List<dynamic>?)
               ?.map((e) => AttendanceSession.fromJson(e as Map<String, dynamic>))
               .toList() ??

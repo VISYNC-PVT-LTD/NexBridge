@@ -30,6 +30,10 @@ export interface AttendanceRecord {
   checkOut?: string;
   workHours?: number;
   isRegularized: boolean;
+  /** A session on this day missed its 24-hour check-out window (no punch-out recorded). */
+  missedCheckout?: boolean;
+  hasUnresolvedMissedCheckout?: boolean;
+  isCheckedIn?: boolean;
   createdAt: string;
 }
 

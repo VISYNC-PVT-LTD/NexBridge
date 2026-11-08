@@ -4,6 +4,7 @@ import { LeaveBalanceQuerySchema } from '@validators/leave';
 import { LeaveService } from '@services/LeaveService';
 import { AppError } from '@services/AuthService';
 import { getAuthUser, AuthError } from '@mw/requireAuth';
+import { isAttendanceAdmin } from '@mw/requireRole';
 import { apiError, success } from '@lib/utils/api-response';
 
 export const dynamic = 'force-dynamic';
@@ -24,7 +25,7 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
     throw err;
   }
 
-  if (payload.role === 'employee' && query.employeeId && query.employeeId !== payload.userId) {
+  if (!isAttendanceAdmin(payload.role) && query.employeeId && query.employeeId !== payload.userId) {
     return apiError('AUTH_006', 'Access denied.', 403);
   }
 

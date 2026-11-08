@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { createHash, timingSafeEqual } from 'crypto';
 
 /**
  * Validates Vercel Cron / admin trigger authorization.
@@ -17,7 +18,10 @@ export function assertCronAuth(request: NextRequest): NextResponse | null {
   const authHeader = request.headers.get('authorization') ?? '';
   const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : '';
 
-  if (!token || token !== secret) {
+  // Constant-time comparison (hash both sides so lengths always match).
+  const a = createHash('sha256').update(token).digest();
+  const b = createHash('sha256').update(secret).digest();
+  if (!token || !timingSafeEqual(a, b)) {
     return NextResponse.json(
       { success: false, error: 'Unauthorized.' },
       { status: 401 },

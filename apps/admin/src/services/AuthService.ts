@@ -6,6 +6,8 @@ import { connectDB } from '@lib/db/connect';
 import { sendEmail } from '@lib/email/brevo';
 import { sha256, hashIpAddress, timingSafeEqualHex } from '@lib/utils/hash';
 import { getAppUrl } from '@lib/utils/app-url';
+import { sealToken, unsealToken } from '@lib/auth/token-seal';
+import { AppError } from '@lib/errors/app-error';
 import { User } from '@models/User';
 import { DeviceSession } from '@models/DeviceSession';
 import { PasswordResetToken } from '@models/PasswordResetToken';
@@ -13,15 +15,21 @@ import { FcmToken } from '@models/FcmToken';
 import { AuditLog } from '@models/AuditLog';
 import type { IUser } from '@models/User';
 
-export class AppError extends Error {
-  constructor(
-    public code: string,
-    public httpStatus: number,
-    message?: string,
-  ) {
-    super(message ?? code);
-  }
+// bcrypt hash of a random value nobody knows — used only to spend the same
+// CPU time on unknown-email logins as on wrong-password logins. Computed once
+// per instance (same cost factor as real password hashes).
+let dummyHashPromise: Promise<string> | null = null;
+function dummyBcryptHash(): Promise<string> {
+  dummyHashPromise ??= bcrypt.hash(randomBytes(16).toString('hex'), 12);
+  return dummyHashPromise;
 }
+
+/** Grace window in which a just-rotated refresh token may be replayed (lost response). */
+export const REFRESH_RETRY_GRACE_MS = 60 * 60 * 1000; // 1 h — see docs/84
+const RESET_TOKEN_TTL_MS = 15 * 60 * 1000;
+
+// Re-exported for the many existing `import { AppError } from '@services/AuthService'`.
+export { AppError };
 
 async function signAccessToken(user: IUser): Promise<string> {
   const secret = new TextEncoder().encode(process.env.JWT_SECRET!);
@@ -114,13 +122,20 @@ export class AuthService {
   ) {
     await connectDB();
 
-    const user = await User.findOne({ email }).select('+passwordHash');
-    if (!user) throw new AppError('AUTH_001', 401);
+    const user = await User.findOne({ email: email.toLowerCase().trim() }).select('+passwordHash');
+    if (!user) {
+      // Equalise timing with the wrong-password path so response time does not
+      // reveal whether the account exists.
+      await bcrypt.compare(password, await dummyBcryptHash());
+      throw new AppError('AUTH_001', 401);
+    }
 
-    if (!user.isActive) throw new AppError('AUTH_007', 401);
-
+    // Password is verified BEFORE account status, so the "deactivated" answer
+    // (AUTH_007) is only ever revealed to someone who already knows the password.
     const passwordOk = await bcrypt.compare(password, user.passwordHash);
     if (!passwordOk) throw new AppError('AUTH_001', 401);
+
+    if (!user.isActive) throw new AppError('AUTH_007', 401);
 
     // Work Desk / HR web-portal roles (admin, super_admin, manager, executive) bypass
     // device fingerprint checks — the web login form never collects one.
@@ -184,10 +199,32 @@ export class AuthService {
     };
   }
 
-  static async refresh(refreshToken: string, sessionId: string) {
+  /**
+   * Refresh-token rotation with reuse detection.
+   *
+   *  - Presenting the CURRENT token rotates it: a new random refresh token is
+   *    issued and returned (`refreshToken` in the response). The mobile client
+   *    and web client store it; old clients that ignore it keep working until
+   *    the grace window ends (they will then be asked to sign in again).
+   *  - Presenting the token that was JUST rotated out, within
+   *    REFRESH_RETRY_GRACE_MS, is treated as a lost-response retry or a
+   *    concurrent refresh: the same current token is returned (idempotent),
+   *    nothing rotates.
+   *  - Presenting the rotated-out token AFTER the grace window is treated as
+   *    token theft/replay: the whole session is revoked and audited.
+   *  - Anything else is a plain 401.
+   *  - Deactivated users: session revoked, AUTH_007.
+   */
+  static async refresh(
+    refreshToken: string,
+    sessionId: string,
+    ip = 'unknown',
+    userAgent = '',
+  ): Promise<{ accessToken: string; refreshToken: string }> {
     await connectDB();
 
-    const session = await DeviceSession.findById(sessionId);
+    if (!mongoose.isValidObjectId(sessionId)) throw new AppError('AUTH_003', 401);
+    const session = await DeviceSession.findById(sessionId).select('+pendingRefreshTokenEnc');
     if (!session) throw new AppError('AUTH_003', 401);
 
     if (session.isRevoked) throw new AppError('AUTH_003', 401);
@@ -197,27 +234,83 @@ export class AuthService {
     if (session.absoluteExpiresAt < now) throw new AppError('AUTH_002', 401);
 
     const providedHash = sha256(refreshToken);
-    if (providedHash !== session.refreshTokenHash) throw new AppError('AUTH_003', 401);
+    const isCurrent = timingSafeEqualHex(providedHash, session.refreshTokenHash);
+    const isPrevious =
+      !isCurrent &&
+      !!session.previousRefreshTokenHash &&
+      timingSafeEqualHex(providedHash, session.previousRefreshTokenHash);
+
+    if (!isCurrent && !isPrevious) throw new AppError('AUTH_003', 401);
+
+    if (isPrevious) {
+      const rotatedAt = session.rotatedAt?.getTime() ?? 0;
+      const withinGrace = now.getTime() - rotatedAt <= REFRESH_RETRY_GRACE_MS;
+      const current = withinGrace ? unsealToken(session.pendingRefreshTokenEnc) : null;
+      if (withinGrace && !current) {
+        // Retry copy unreadable (e.g. JWT_REFRESH_SECRET was rotated): not
+        // evidence of theft — plain 401, the client signs in again.
+        throw new AppError('AUTH_003', 401);
+      }
+      if (!current) {
+        // Replay of a rotated-out token outside the grace window → assume theft.
+        await DeviceSession.updateOne(
+          { _id: session._id, isRevoked: false },
+          { $set: { isRevoked: true, revokedAt: now, revokedReason: 'refresh-reuse' } },
+        );
+        await writeAuditLog(session.employeeId, 'AUTH_REFRESH_REUSE_DETECTED', session.employeeId.toHexString(), ip, userAgent);
+        throw new AppError('AUTH_003', 401);
+      }
+      const user = await User.findById(session.employeeId);
+      if (!user) throw new AppError('AUTH_003', 401);
+      if (!user.isActive) {
+        await DeviceSession.updateOne({ _id: session._id }, { $set: { isRevoked: true, revokedAt: now, revokedReason: 'deactivated' } });
+        throw new AppError('AUTH_007', 401);
+      }
+      const accessToken = await signAccessToken(user);
+      return { accessToken, refreshToken: current };
+    }
 
     const user = await User.findById(session.employeeId);
     if (!user) throw new AppError('AUTH_003', 401);
-    if (!user.isActive) throw new AppError('AUTH_007', 401);
+    if (!user.isActive) {
+      await DeviceSession.updateOne({ _id: session._id }, { $set: { isRevoked: true, revokedAt: now, revokedReason: 'deactivated' } });
+      throw new AppError('AUTH_007', 401);
+    }
 
+    const newRefreshToken = generateRefreshToken();
     const newExpiry = new Date(
       Math.min(now.getTime() + 30 * 24 * 60 * 60 * 1000, session.absoluteExpiresAt.getTime()),
     );
-    await DeviceSession.updateOne(
-      { _id: session._id },
-      { $set: { expiresAt: newExpiry, lastUsedAt: now } },
+    // Conditional on the hash we validated: of two concurrent rotations of the
+    // same current token, only one wins; the loser falls back to the grace path.
+    const rotated = await DeviceSession.findOneAndUpdate(
+      { _id: session._id, isRevoked: false, refreshTokenHash: session.refreshTokenHash },
+      {
+        $set: {
+          refreshTokenHash: sha256(newRefreshToken),
+          previousRefreshTokenHash: session.refreshTokenHash,
+          rotatedAt: now,
+          pendingRefreshTokenEnc: sealToken(newRefreshToken),
+          expiresAt: newExpiry,
+          lastUsedAt: now,
+        },
+      },
+      { new: true },
     );
+    if (!rotated) {
+      // Lost the race to a concurrent refresh of the same token — retry once;
+      // the token is now "previous" and resolves through the grace path.
+      return AuthService.refresh(refreshToken, sessionId, ip, userAgent);
+    }
 
     const accessToken = await signAccessToken(user);
-    return { accessToken };
+    return { accessToken, refreshToken: newRefreshToken };
   }
 
   static async logout(sessionId: string, userId: string, ip: string, userAgent: string) {
     await connectDB();
 
+    if (!mongoose.isValidObjectId(sessionId)) return;
     const session = await DeviceSession.findById(sessionId);
     if (!session) return;
 
@@ -242,19 +335,28 @@ export class AuthService {
   static async requestPasswordReset(email: string, ip: string): Promise<void> {
     await connectDB();
 
-    const user = await User.findOne({ email: email.toLowerCase() });
-    if (!user) return;
+    const user = await User.findOne({ email: email.toLowerCase().trim() });
+    // Unknown and deactivated accounts get no email; the caller always returns
+    // the same generic response, so account existence is not revealed.
+    if (!user || !user.isActive) return;
 
     const rawToken = randomBytes(32).toString('hex');
     const tokenHash = createHash('sha256').update(rawToken).digest('hex');
-    const expiresAt = new Date(Date.now() + 15 * 60 * 1000);
+    const expiresAt = new Date(Date.now() + RESET_TOKEN_TTL_MS);
+
+    // Only the newest link works: invalidate every earlier unused reset/invite
+    // token for this user before issuing a new one.
+    await PasswordResetToken.updateMany(
+      { userId: user._id, isUsed: false },
+      { $set: { isUsed: true, usedAt: new Date() } },
+    );
 
     await PasswordResetToken.create({
       userId: user._id,
       email: user.email,
       tokenHash,
       expiresAt,
-      ipAddress: ip,
+      ipAddress: hashIpAddress(ip), // never store the raw IP
     });
 
     const appUrl = getAppUrl();
@@ -267,33 +369,32 @@ export class AuthService {
         htmlContent: passwordResetEmailHtml(user.firstName, resetUrl),
       });
     } catch {
-      // Non-fatal — enumeration prevention requires always returning OK
+      // Non-fatal — enumeration prevention requires always returning OK.
+      // The token stays valid for its 15-minute life; the user can request a
+      // new link. Nothing about the failure (or the link) is logged.
+      console.error('[auth] password reset email delivery failed');
     }
   }
 
   static async confirmPasswordReset(email: string, rawToken: string, newPassword: string, ip = 'unknown', userAgent = '') {
     await connectDB();
 
-    const tokenRecord = await PasswordResetToken.findOne({
-      email: email.toLowerCase(),
-      isUsed: false,
-    }).sort({ createdAt: -1 });
-
-    // AUTH_008 = token not found / invalid; AUTH_009 = token expired (per API spec error catalog)
-    const invalid = () => { throw new AppError('AUTH_008', 400); };
-
-    if (!tokenRecord) invalid();
-
-    if (tokenRecord!.expiresAt < new Date()) throw new AppError('AUTH_009', 400);
-
+    // AUTH_008 = token invalid / already used / wrong email; AUTH_009 = expired.
+    // Lookup is by token HASH (never "latest token for this email"), so an older
+    // link can never become valid again after a newer one is used.
     const providedHash = createHash('sha256').update(rawToken).digest('hex');
-    const match = timingSafeEqualHex(providedHash, tokenRecord!.tokenHash);
-    if (!match) invalid();
+    const tokenRecord = await PasswordResetToken.findOne({ tokenHash: providedHash, isUsed: false });
 
-    const user = await User.findById(tokenRecord!.userId).select('+passwordHash');
-    if (!user) invalid();
+    if (!tokenRecord || !timingSafeEqualHex(providedHash, tokenRecord.tokenHash)) {
+      throw new AppError('AUTH_008', 400);
+    }
+    if (tokenRecord.email !== email.toLowerCase().trim()) throw new AppError('AUTH_008', 400);
+    if (tokenRecord.expiresAt < new Date()) throw new AppError('AUTH_009', 400);
 
-    const same = await bcrypt.compare(newPassword, user!.passwordHash);
+    const user = await User.findById(tokenRecord.userId).select('+passwordHash');
+    if (!user || !user.isActive) throw new AppError('AUTH_008', 400);
+
+    const same = await bcrypt.compare(newPassword, user.passwordHash);
     if (same) throw new AppError('GEN_001', 400);
 
     const newHash = await bcrypt.hash(newPassword, 12);
@@ -301,19 +402,29 @@ export class AuthService {
     const mongoSession = await mongoose.startSession();
     try {
       await mongoSession.withTransaction(async () => {
+        // Atomic single use: the conditional claim matches for exactly one of
+        // any number of concurrent confirmations; the others abort.
+        const claimed = await PasswordResetToken.findOneAndUpdate(
+          { _id: tokenRecord._id, isUsed: false, expiresAt: { $gt: new Date() } },
+          { $set: { isUsed: true, usedAt: new Date() } },
+          { session: mongoSession, new: true },
+        );
+        if (!claimed) throw new AppError('AUTH_008', 400);
+
         await User.updateOne(
-          { _id: user!._id },
+          { _id: user._id },
           { $set: { passwordHash: newHash, requiresPasswordChange: false } },
           { session: mongoSession },
         );
-        await PasswordResetToken.updateOne(
-          { _id: tokenRecord!._id },
+        // Any other outstanding reset/invite links for this user die too.
+        await PasswordResetToken.updateMany(
+          { userId: user._id, isUsed: false },
           { $set: { isUsed: true, usedAt: new Date() } },
           { session: mongoSession },
         );
         await DeviceSession.updateMany(
-          { employeeId: user!._id, isRevoked: false },
-          { $set: { isRevoked: true, revokedAt: new Date(), revokedReason: 'admin-reset' } },
+          { employeeId: user._id, isRevoked: false },
+          { $set: { isRevoked: true, revokedAt: new Date(), revokedReason: 'password-reset' } },
           { session: mongoSession },
         );
       });
@@ -336,14 +447,28 @@ export class AuthService {
     newPassword: string,
     ip: string,
     userAgent: string,
+    currentSessionId?: string,
   ) {
     await connectDB();
 
     const user = await User.findById(userId).select('+passwordHash');
     if (!user) throw new AppError('AUTH_001', 401);
+    if (!user.isActive) throw new AppError('AUTH_007', 401);
 
     const currentOk = await bcrypt.compare(currentPassword, user.passwordHash);
     if (!currentOk) throw new AppError('AUTH_001', 401);
+
+    // The caller's own session survives (if it supplied a session id that
+    // really belongs to this user and is live); every other session is revoked.
+    let keepSessionOid: mongoose.Types.ObjectId | null = null;
+    if (currentSessionId && mongoose.isValidObjectId(currentSessionId)) {
+      const own = await DeviceSession.findOne({
+        _id: currentSessionId,
+        employeeId: user._id,
+        isRevoked: false,
+      }).lean();
+      if (own) keepSessionOid = own._id as mongoose.Types.ObjectId;
+    }
 
     const same = await bcrypt.compare(newPassword, user.passwordHash);
     if (same) throw new AppError('GEN_001', 400);
@@ -359,8 +484,18 @@ export class AuthService {
           { session: mongoSession },
         );
         await DeviceSession.updateMany(
-          { employeeId: user._id, isRevoked: false },
-          { $set: { isRevoked: true, revokedAt: new Date(), revokedReason: 'logout' } },
+          {
+            employeeId: user._id,
+            isRevoked: false,
+            ...(keepSessionOid ? { _id: { $ne: keepSessionOid } } : {}),
+          },
+          { $set: { isRevoked: true, revokedAt: new Date(), revokedReason: 'password-change' } },
+          { session: mongoSession },
+        );
+        // Outstanding reset/invite links must not be able to undo the change.
+        await PasswordResetToken.updateMany(
+          { userId: user._id, isUsed: false },
+          { $set: { isUsed: true, usedAt: new Date() } },
           { session: mongoSession },
         );
       });
@@ -371,6 +506,7 @@ export class AuthService {
     const updatedUser = user.toObject() as IUser;
     updatedUser.requiresPasswordChange = false;
     const accessToken = await signAccessToken(updatedUser);
+    const currentSessionKept = keepSessionOid !== null;
 
     await writeAuditLog(
       user._id as mongoose.Types.ObjectId,
@@ -380,7 +516,7 @@ export class AuthService {
       userAgent,
     );
 
-    return { accessToken };
+    return { accessToken, currentSessionKept };
   }
 
   static async getMe(userId: string) {

@@ -13,6 +13,7 @@ import { Holiday } from '@models/Holiday';
 import { AttendanceDay } from '@models/AttendanceDay';
 import { AttendanceSession } from '@models/AttendanceSession';
 import { AuditLog } from '@models/AuditLog';
+import { NotificationService } from '@services/NotificationService';
 
 // ─── Fixtures ─────────────────────────────────────────────────────────────────
 
@@ -110,6 +111,12 @@ function mockTransaction() {
 
 beforeEach(() => {
   jest.restoreAllMocks();
+  // Current contract: every state transition is a conditional
+  // Leave.findOneAndUpdate({ status: <expected> }). Default: the claim succeeds.
+  jest.spyOn(Leave, 'findOneAndUpdate').mockResolvedValue({ _id: new mongoose.Types.ObjectId() } as never);
+  // Notification fan-out is fire-and-forget; covered by NotificationService tests.
+  jest.spyOn(NotificationService, 'create').mockResolvedValue(undefined as never);
+  jest.spyOn(NotificationService, 'notifyAllAdmins').mockResolvedValue(undefined as never);
 
   // Default mocks for ConnectDB (already mocked via readyState)
   jest.spyOn(CompanySettings, 'findById').mockReturnValue({
@@ -400,7 +407,12 @@ describe('U-LVE-12: cancel() pending leave by employee', () => {
     const result = await LeaveService.cancel(LEAVE_ID, EMP_ID);
 
     expect(result.status).toBe('cancelled');
-    expect(leave.save).toHaveBeenCalled();
+    // Conditional on owner + pending (replaces the old unconditional doc.save()).
+    expect(Leave.findOneAndUpdate).toHaveBeenCalledWith(
+      expect.objectContaining({ status: 'pending' }),
+      { $set: { status: 'cancelled' } },
+      expect.anything(),
+    );
   });
 });
 
@@ -501,5 +513,57 @@ describe('U-LVE-17: apply() LWP — no balance check', () => {
     });
 
     expect(userSpy).not.toHaveBeenCalled();
+  });
+});
+
+// ─── Concurrency: duplicate/racing state transitions ─────────────────────────
+
+describe('U-LVE-RACE: conditional state transitions', () => {
+  it('a second concurrent approval aborts before deducting balance', async () => {
+    mockTransaction();
+    mockFindByIdLean(Leave, makeLeave());
+    mockFindByIdLean(User, makeUser());
+    jest.spyOn(Leave, 'findOneAndUpdate').mockResolvedValue(null as never); // already approved
+    const deduct = jest.spyOn(User, 'findOneAndUpdate');
+    await expect(LeaveService.approve(LEAVE_ID, ADMIN_ID)).rejects.toMatchObject({ code: 'LVE_005' });
+    expect(deduct).not.toHaveBeenCalled();
+  });
+
+  it('cancel loses cleanly when the leave was approved in between', async () => {
+    jest.spyOn(Leave, 'findById').mockResolvedValue(makeLeave() as never);
+    jest.spyOn(Leave, 'findOneAndUpdate').mockResolvedValue(null as never);
+    await expect(LeaveService.cancel(LEAVE_ID, EMP_ID)).rejects.toMatchObject({ code: 'LVE_007' });
+  });
+
+  it('reject loses cleanly when the leave was cancelled in between', async () => {
+    jest.spyOn(Leave, 'findById').mockResolvedValue(makeLeave() as never);
+    jest.spyOn(Leave, 'findOneAndUpdate').mockResolvedValue(null as never);
+    await expect(LeaveService.reject(LEAVE_ID, ADMIN_ID, 'x')).rejects.toMatchObject({ code: 'LVE_005' });
+  });
+});
+
+// ─── Authorization: manager / executive are not HR admins ────────────────────
+
+describe('U-LVE-AUTHZ: non-HR-admin roles see only their own leave', () => {
+  it.each(['manager', 'executive'] as const)('%s list is forced to own employeeId', async (role) => {
+    const find = jest.spyOn(Leave, 'find').mockReturnValue({
+      sort: jest.fn().mockReturnThis(), skip: jest.fn().mockReturnThis(), limit: jest.fn().mockReturnThis(),
+      lean: jest.fn().mockResolvedValue([]),
+    } as never);
+    jest.spyOn(Leave, 'countDocuments').mockResolvedValue(0 as never);
+    const actor = new mongoose.Types.ObjectId().toHexString();
+    await LeaveService.list({ actorId: actor, role, employeeId: EMP_ID, page: 1, limit: 20, sortBy: 'createdAt' } as never);
+    expect(String((find.mock.calls[0][0] as Record<string, unknown>).employeeId)).toBe(actor);
+  });
+
+  it.each(['manager', 'executive'] as const)('%s cannot read another employee leave by id', async (role) => {
+    mockFindByIdLean(Leave, makeLeave());
+    const actor = new mongoose.Types.ObjectId().toHexString();
+    await expect(LeaveService.getById(LEAVE_ID, actor, role)).rejects.toMatchObject({ httpStatus: 403 });
+  });
+
+  it('super_admin may read any leave (consistent with admin)', async () => {
+    mockFindByIdLean(Leave, makeLeave());
+    await expect(LeaveService.getById(LEAVE_ID, ADMIN_ID, 'super_admin')).resolves.toBeDefined();
   });
 });

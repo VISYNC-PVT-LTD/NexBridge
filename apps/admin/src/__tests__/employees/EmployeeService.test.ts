@@ -16,6 +16,7 @@ import { DeviceSession } from '@models/DeviceSession';
 import { AuditLog } from '@models/AuditLog';
 import { CompanySettings } from '@models/CompanySettings';
 import { PasswordResetToken } from '@models/PasswordResetToken';
+import { NotificationService } from '@services/NotificationService';
 
 const ADMIN_ID = new mongoose.Types.ObjectId().toHexString();
 const EMP_ID = new mongoose.Types.ObjectId().toHexString();
@@ -65,9 +66,17 @@ function makeQueryChain(resolveWith: unknown[]) {
 }
 
 beforeEach(() => {
+  // Notification fan-out is fire-and-forget; covered by NotificationService tests.
+  jest.spyOn(NotificationService, 'create').mockResolvedValue(undefined as never);
+  jest.spyOn(NotificationService, 'notifyAllAdmins').mockResolvedValue(undefined as never);
   jest.spyOn(AuditLog, 'create').mockResolvedValue({} as never);
   jest.spyOn(Employee, 'create').mockResolvedValue({} as never);
   jest.spyOn(PasswordResetToken, 'create').mockResolvedValue({} as never);
+  // Current contract: getById/update also read the Employee (payroll) profile
+  // for allowOutsideGeofence. Default: no profile document.
+  jest.spyOn(Employee, 'findOne').mockReturnValue({
+    lean: jest.fn().mockResolvedValue(null),
+  } as unknown as ReturnType<typeof Employee.findOne>);
   mockSettings();
 });
 

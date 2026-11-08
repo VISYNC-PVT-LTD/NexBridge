@@ -62,3 +62,9 @@ export async function POST(request: NextRequest) {
     skipped,
   });
 }
+
+// Vercel Cron invokes the configured path with an HTTP GET carrying
+// `Authorization: Bearer <CRON_SECRET>` (Vercel docs: Managing Cron Jobs).
+// POST is kept for manual/admin triggering. Both run the same authenticated,
+// idempotent handler.
+export const GET = POST;

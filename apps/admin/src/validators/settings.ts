@@ -1,11 +1,18 @@
 import { z } from 'zod';
 
 const WEEKDAYS = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'] as const;
-const TIME_REGEX = /^\d{2}:\d{2}$/;
+// 24-hour HH:MM, 00:00–23:59 (previously /^\d{2}:\d{2}$/ accepted e.g. 99:99).
+export const TIME_REGEX = /^([01]\d|2[0-3]):[0-5]\d$/;
+
+/** IANA timezone that this runtime can actually format (an invalid zone would
+ *  make every attendance date computation throw). */
+export const timezoneSchema = z.string().min(1).max(50).refine((tz) => {
+  try { new Intl.DateTimeFormat('en-US', { timeZone: tz }); return true; } catch { return false; }
+}, 'Must be a valid IANA timezone, e.g. Asia/Kolkata');
 
 export const UpdateCompanySchema = z.object({
   companyName:                   z.string().min(1).max(100).optional(),
-  timezone:                      z.string().min(1).max(50).optional(),
+  timezone:                      timezoneSchema.optional(),
   currency:                      z.string().length(3).optional(),
   lateArrivalGraceMinutes:       z.number().int().min(0).max(120).optional(),
   leaveYearStartMonth:           z.number().int().min(1).max(12).optional(),

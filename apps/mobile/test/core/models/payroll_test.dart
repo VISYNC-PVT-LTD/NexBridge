@@ -46,7 +46,7 @@ void main() {
 
   group('PayslipRecord.fromJson', () {
     final json = {
-      '_id': 'p1',
+      'id': 'p1', // server PayrollService.formatRecord() returns 'id'
       'employeeId': 'e1',
       'yearMonth': '2026-06',
       'status': 'finalised',
@@ -80,7 +80,7 @@ void main() {
     });
 
     test('defaults to zero on missing numeric fields', () {
-      final p = PayslipRecord.fromJson({'_id': 'x', 'yearMonth': '2026-01'});
+      final p = PayslipRecord.fromJson({'id': 'x', 'yearMonth': '2026-01'});
       expect(p.grossSalary, 0.0);
       expect(p.payableDays, 0.0);
     });

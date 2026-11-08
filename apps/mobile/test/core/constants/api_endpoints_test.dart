@@ -34,5 +34,10 @@ void main() {
     test('fcmToken matches spec path POST /notifications/fcm-token', () {
       expect(ApiEndpoints.fcmToken, '/api/v1/notifications/fcm-token');
     });
+
+    test('regularization withdraw matches server route PATCH /regularizations/:id/withdraw', () {
+      // Regression: the app previously called /cancel, which does not exist (404).
+      expect(ApiEndpoints.regularizationWithdraw('abc123'), '/api/v1/regularizations/abc123/withdraw');
+    });
   });
 }

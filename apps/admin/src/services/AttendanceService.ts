@@ -23,6 +23,8 @@ import { GeocodingService } from '@services/GeocodingService';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
+const FINGERPRINT_REGEX = /^[0-9a-f]{64}$/i;
+
 function isMongooseDuplicateKey(err: unknown): boolean {
   return typeof err === 'object' && err !== null && 'code' in err && (err as { code: number }).code === 11000;
 }
@@ -67,24 +69,154 @@ function deriveDayStatus(
   return durationStatus;
 }
 
+// ─── Missed check-out (24-hour rule) ─────────────────────────────────────────
+//
+// Business rule (docs/85):
+//  * A session that is not checked out within 24 hours of its check-in is a
+//    MISSED CHECK-OUT. The deadline is checkIn + 24 h; a check-out at or after
+//    the deadline is refused.
+//  * No punch-out is fabricated: the session keeps checkOut = null and
+//    durationMinutes = 0, and is marked closedBySystem with
+//    systemCloseReason 'missed-checkout'. The original check-in is preserved.
+//  * The check-in day is marked ABSENT (unless it is already a leave / LWP /
+//    holiday / weekend day or was regularized) and flagged
+//    hasUnresolvedMissedCheckout until an approved regularization or leave
+//    resolves it. No worked minutes are added.
+//  * Enforcement is lazy AND scheduled: every attendance read/write path calls
+//    reconcileMissedCheckouts() first, so the rule is applied on time from the
+//    user's point of view even if the nightly cron runs late or not at all.
+
+export const MISSED_CHECKOUT_WINDOW_MS = 24 * 60 * 60 * 1000;
+
+/** Deadline by which a session must be checked out. */
+export function checkoutDeadline(checkIn: Date): Date {
+  return new Date(checkIn.getTime() + MISSED_CHECKOUT_WINDOW_MS);
+}
+
+/** True when the 24-hour window has elapsed (boundary inclusive: at the deadline it is missed). */
+export function isCheckoutWindowExpired(checkIn: Date, now: Date = new Date()): boolean {
+  return now.getTime() >= checkoutDeadline(checkIn).getTime();
+}
+
+const PROTECTED_DAY_STATUSES: AttendanceDayStatus[] = ['leave', 'lwp', 'holiday', 'weekend'];
+
+/**
+ * Marks one overdue session as a missed check-out. Idempotent and race-safe:
+ * the update is conditional on the session still being active AND overdue, so
+ * a duplicate cron run, a concurrent read-path reconciliation or a check-out
+ * that won the race just before the deadline cannot be overwritten.
+ * Returns true only for the call that performed the transition.
+ */
+async function markMissedCheckout(
+  session: { _id: mongoose.Types.ObjectId; employeeId: mongoose.Types.ObjectId; attendanceDayId: mongoose.Types.ObjectId; checkIn: { timestamp: Date } },
+  now: Date,
+): Promise<boolean> {
+  const deadline = checkoutDeadline(session.checkIn.timestamp);
+  if (now.getTime() < deadline.getTime()) return false;
+
+  let transitioned = false;
+  const mongoSession = await mongoose.startSession();
+  try {
+    await mongoSession.withTransaction(async () => {
+      transitioned = false;
+      const expired = await AttendanceSession.findOneAndUpdate(
+        { _id: session._id, isActive: true, 'checkIn.timestamp': { $lte: new Date(now.getTime() - MISSED_CHECKOUT_WINDOW_MS) } },
+        {
+          $set: {
+            isActive: false,
+            closedBySystem: true,
+            systemCloseReason: 'missed-checkout' as const,
+            durationMinutes: 0,
+            checkOut: null,
+            missedCheckoutDeadline: deadline,
+            missedCheckoutDetectedAt: now,
+          },
+        },
+        { session: mongoSession, new: true },
+      );
+      if (!expired) return;
+
+      const day = await AttendanceDay.findById(session.attendanceDayId).session(mongoSession);
+      if (day) {
+        const isProtected = PROTECTED_DAY_STATUSES.includes(day.status) || day.isRegularized;
+        await AttendanceDay.updateOne(
+          { _id: day._id },
+          {
+            $set: {
+              missedCheckoutSessionId: session._id,
+              ...(isProtected ? {} : { status: 'absent', hasUnresolvedMissedCheckout: true }),
+            },
+          },
+          { session: mongoSession },
+        );
+      }
+      await AuditLog.create(
+        [{
+          performedBy: session.employeeId,
+          action: 'ATTENDANCE_MISSED_CHECKOUT',
+          targetType: 'AttendanceSession',
+          targetId: session._id.toHexString(),
+          changes: { by: 'system', deadline: deadline.toISOString(), detectedAt: now.toISOString() },
+        }],
+        { session: mongoSession },
+      );
+      transitioned = true;
+    });
+  } finally {
+    await mongoSession.endSession();
+  }
+  return transitioned;
+}
+
+/**
+ * Applies the 24-hour rule to every overdue active session (optionally for one
+ * employee). Safe to call from any request path and from the cron.
+ */
+export async function reconcileMissedCheckouts(
+  opts: { employeeId?: string; now?: Date } = {},
+): Promise<{ expired: number }> {
+  const now = opts.now ?? new Date();
+  const filter: Record<string, unknown> = {
+    isActive: true,
+    'checkIn.timestamp': { $lte: new Date(now.getTime() - MISSED_CHECKOUT_WINDOW_MS) },
+  };
+  if (opts.employeeId) filter.employeeId = new mongoose.Types.ObjectId(opts.employeeId);
+
+  const overdue = await AttendanceSession.find(filter)
+    .select('_id employeeId attendanceDayId checkIn.timestamp')
+    .lean();
+  let expired = 0;
+  for (const s of overdue ?? []) {
+    if (await markMissedCheckout(s as unknown as Parameters<typeof markMissedCheckout>[0], now)) expired++;
+  }
+  return { expired };
+}
+
 /** Format a session for API responses. */
 function formatSession(s: {
   _id: mongoose.Types.ObjectId;
   checkIn: { timestamp: Date; latitude: number; longitude: number; address?: string | null; geocodingStatus?: string };
   checkOut: { timestamp: Date } | null;
   durationMinutes: number | null;
+  isActive?: boolean;
   closedBySystem: boolean;
+  systemCloseReason?: string;
   isRemote: boolean;
   remoteSource?: string;
 }) {
+  const missedCheckout = s.systemCloseReason === 'missed-checkout';
   return {
     sessionId: s._id.toHexString(),
     checkInTimestamp: s.checkIn.timestamp.toISOString(),
     checkInLocation: { latitude: s.checkIn.latitude, longitude: s.checkIn.longitude },
     checkInAddress: s.checkIn.address ?? null,
+    // Never a fabricated punch-out: a missed check-out has no checkout time.
     checkOutTimestamp: s.checkOut ? s.checkOut.timestamp.toISOString() : null,
     durationMinutes: s.durationMinutes ?? 0,
+    isActive: s.isActive === true,
     closedBySystem: s.closedBySystem,
+    missedCheckout,
+    ...(missedCheckout && { checkoutDeadline: checkoutDeadline(s.checkIn.timestamp).toISOString() }),
     isRemote: s.isRemote,
     ...(s.remoteSource !== undefined && { remoteSource: s.remoteSource }),
   };
@@ -97,7 +229,9 @@ function formatDayRecord(
   settings: { requiredDailyMinutes: number },
   timezone: string,
 ) {
-  const hasActiveSession = sessions.some((s) => s.checkOutTimestamp === null);
+  // Only a genuinely active session means "checked-in" (a missed check-out
+  // also has no checkout time but is closed).
+  const hasActiveSession = sessions.some((s) => s.isActive);
   const overtimeMinutes = Math.max(0, day.totalMinutes - settings.requiredDailyMinutes);
   const zonedDate = toZonedTime(day.date, timezone);
   const dayNames = ['sunday','monday','tuesday','wednesday','thursday','friday','saturday'];
@@ -114,6 +248,7 @@ function formatDayRecord(
     isHoliday: day.status === 'holiday',
     isWeekend: day.status === 'weekend',
     isRegularized: day.isRegularized,
+    hasUnresolvedMissedCheckout: day.hasUnresolvedMissedCheckout === true,
     sessions,
   };
 }
@@ -133,6 +268,8 @@ export interface CheckInInput {
 
 export interface CheckOutInput {
   employeeId: string;
+  /** X-Device-Fingerprint header (raw 64-hex). Required: checkout is bound to the registered device. */
+  deviceFingerprintHeader?: string;
   nonce: string;
   clientTimestamp: string;
   clientIp?: string;
@@ -164,7 +301,6 @@ export class AttendanceService {
     // header on a check-in request"; in AuthService.login it means "no registeredDevice
     // on the user account". Same code, different meaning depending on call site. Not
     // split this phase (attendance scope) — noted for 30.10.
-    const FINGERPRINT_REGEX = /^[0-9a-f]{64}$/i;
     if (!FINGERPRINT_REGEX.test(input.deviceFingerprintHeader)) {
       throw new AppError('AUTH_004', 401, 'Missing or malformed device fingerprint.');
     }
@@ -179,7 +315,7 @@ export class AttendanceService {
     // Validate timestamp window (BR-ATT-01)
     const clientTime = new Date(input.clientTimestamp);
     const diffMs = Math.abs(serverTime.getTime() - clientTime.getTime());
-    if (diffMs > settings.checkinTimestampWindowMinutes * 60 * 1000) {
+    if (Number.isNaN(diffMs) || diffMs > settings.checkinTimestampWindowMinutes * 60 * 1000) {
       throw new AppError('ATT_007', 422, 'Timestamp outside allowed window.');
     }
 
@@ -215,7 +351,8 @@ export class AttendanceService {
       } else if (validationMode === 'officeIp') {
         const allowedIps = settings.allowedOfficeIps ?? [];
         if (allowedIps.length === 0 || !allowedIps.includes(input.clientIp ?? '')) {
-          throw new AppError('ATT_004', 422, 'Not connected to the approved office network.');
+          // ATT_009 (was ATT_004, which also means "nonce already used").
+          throw new AppError('ATT_009', 422, 'Not connected to the approved office network.');
         }
       }
     }
@@ -278,26 +415,22 @@ export class AttendanceService {
     const [year, month] = dateString.split('-').map(Number);
     const dateOnly = new Date(dateString + 'T00:00:00.000Z');
 
-    // Auto-close any stale active session (missed-checkout rollover) before creating new one.
-    // Stale = session from a previous calendar day OR running ≥ 24 h.
-    // This removes the partial-unique-index conflict and avoids forcing the employee to regularise
-    // before they can check in again.
-    const MAX_SESSION_MINUTES = 24 * 60;
+    // 24-hour rule (docs/85): an open session blocks a new check-in until its
+    // 24-hour window has elapsed — even across a calendar day. Once the window
+    // has elapsed the old session becomes a missed check-out (no fabricated
+    // punch-out, its day marked absent) and the new check-in proceeds.
     const existingActive = await AttendanceSession.findOne({
       employeeId: new mongoose.Types.ObjectId(input.employeeId),
       isActive: true,
     }).lean();
     if (existingActive) {
-      const elapsedMinutes = Math.round((Date.now() - existingActive.checkIn.timestamp.getTime()) / 60_000);
-      const isStale = elapsedMinutes >= MAX_SESSION_MINUTES || existingActive.dateString !== dateString;
-      if (!isStale) throw new AppError('ATT_003', 409, 'Already checked in.');
-      const cappedDuration = Math.min(elapsedMinutes, MAX_SESSION_MINUTES);
-      await AttendanceSession.findByIdAndUpdate(existingActive._id, {
-        $set: { isActive: false, closedBySystem: true, systemCloseReason: 'midnight-rollover', durationMinutes: cappedDuration },
-      });
-      await AttendanceDay.findByIdAndUpdate(existingActive.attendanceDayId, {
-        $inc: { totalMinutes: cappedDuration },
-      });
+      if (!isCheckoutWindowExpired(existingActive.checkIn.timestamp, serverTime)) {
+        throw new AppError('ATT_003', 409, 'Already checked in. Check out of your open session first.');
+      }
+      await markMissedCheckout(
+        existingActive as unknown as Parameters<typeof markMissedCheckout>[0],
+        serverTime,
+      );
     }
 
     // Transaction: upsert AttendanceDay + create AttendanceSession (BR-ATT-07)
@@ -392,7 +525,9 @@ export class AttendanceService {
       action: 'ATTENDANCE_CHECKIN',
       targetType: 'AttendanceSession',
       targetId: sessionIdForGeo,
-      changes: { dateString, latitude: input.latitude, longitude: input.longitude },
+      // Coordinates live on the session record; the audit trail does not need
+      // a second copy of the employee's location.
+      changes: { dateString, isRemote },
     });
 
     return {
@@ -418,75 +553,129 @@ export class AttendanceService {
     const settings = await CompanySettings.findById('company-settings').lean() as ICompanySettings | null;
     if (!settings) throw new AppError('GEN_500', 500, 'Company settings not configured.');
 
+    const employeeOid = new mongoose.Types.ObjectId(input.employeeId);
+
+    // Account + device binding (same rules as check-in, BR-ATT-02). Checkout
+    // must come from the registered device, not just any holder of the token.
+    const user = await User.findById(input.employeeId).lean();
+    if (!user) throw new AppError('AUTH_003', 401, 'Unauthorized.');
+    if (!user.isActive) throw new AppError('AUTH_007', 403, 'Account deactivated.');
+    const fingerprint = input.deviceFingerprintHeader ?? '';
+    if (!FINGERPRINT_REGEX.test(fingerprint)) {
+      throw new AppError('AUTH_004', 401, 'Missing or malformed device fingerprint.');
+    }
+    if (!user.registeredDevice || sha256(fingerprint) !== user.registeredDevice.fingerprintHash) {
+      throw new AppError('AUTH_005', 401, 'Device fingerprint mismatch.');
+    }
+
     // Find active session (BR-ATT-09)
     const activeSession = await AttendanceSession.findOne({
-      employeeId: new mongoose.Types.ObjectId(input.employeeId),
+      employeeId: employeeOid,
       isActive: true,
     });
     if (!activeSession) throw new AppError('ATT_005', 422, 'No active session found.');
 
+    // 24-hour rule: at or after checkIn + 24 h the session can no longer be
+    // checked out. It becomes a missed check-out (no punch-out recorded) and
+    // the employee must use regularization or leave.
+    if (isCheckoutWindowExpired(activeSession.checkIn.timestamp, serverTime)) {
+      await markMissedCheckout(
+        activeSession as unknown as Parameters<typeof markMissedCheckout>[0],
+        serverTime,
+      );
+      throw new AppError(
+        'ATT_011',
+        422,
+        'The 24-hour check-out window for this session has passed. It is recorded as a missed check-out; please submit a regularization or leave request.',
+      );
+    }
+
     // Validate timestamp window (BR-ATT-10)
     const clientTime = new Date(input.clientTimestamp);
     const diffMs = Math.abs(serverTime.getTime() - clientTime.getTime());
-    if (diffMs > settings.checkinTimestampWindowMinutes * 60 * 1000) {
+    if (Number.isNaN(diffMs) || diffMs > settings.checkinTimestampWindowMinutes * 60 * 1000) {
       throw new AppError('ATT_007', 422, 'Timestamp outside allowed window.');
     }
 
-    // Consume nonce (BR-ATT-11)
-    try {
-      await UsedNonce.create({ nonce: input.nonce, employeeId: new mongoose.Types.ObjectId(input.employeeId), action: 'checkout' });
-    } catch (err) {
-      if (isMongooseDuplicateKey(err)) throw new AppError('ATT_004', 409, 'Nonce already used.');
-      throw err;
-    }
-
-    // Validate attendance location at checkout — same rules as check-in
-    const checkoutEmployeeProfile = await Employee.findOne({ userId: new mongoose.Types.ObjectId(input.employeeId) }).lean<IEmployee>();
+    // Location policy at checkout — same rules as check-in.
+    const checkoutEmployeeProfile = await Employee.findOne({ userId: employeeOid }).lean<IEmployee>();
     const checkoutBypassGeofence = checkoutEmployeeProfile?.allowOutsideGeofence === true;
     const checkoutValidationMode = settings.attendanceValidationMode ?? 'geofence';
-    const hasCheckoutLocation = input.latitude !== undefined && input.longitude !== undefined;
+    const hasCheckoutLocation =
+      input.latitude !== undefined && input.longitude !== undefined && input.accuracy !== undefined;
+    // An ordinary (non-override) employee under an ENABLED geofence must prove
+    // where they are. Missing coordinates are rejected — never assumed inside.
+    const locationRequired =
+      !checkoutBypassGeofence && checkoutValidationMode === 'geofence' && settings.geoFence.isEnabled;
+
+    if (locationRequired && !hasCheckoutLocation) {
+      throw new AppError(
+        'ATT_010',
+        422,
+        'Location is required to check out. Turn on location services, allow location access for the app, and try again.',
+      );
+    }
+    if (locationRequired && input.accuracy! > settings.gpsAccuracyThresholdMeters) {
+      throw new AppError('ATT_002', 422, 'GPS accuracy too low.');
+    }
+
     const checkoutDistanceFromOffice = hasCheckoutLocation
       ? haversineMeters(
           { latitude: input.latitude!, longitude: input.longitude! },
           { latitude: settings.geoFence.latitude, longitude: settings.geoFence.longitude },
         )
       : 0;
+    // Unverified (no coordinates) is recorded as NOT within the fence.
     const checkoutIsWithinGeoFence = hasCheckoutLocation
       ? checkoutDistanceFromOffice <= settings.geoFence.radiusMeters
-      : true;
+      : false;
 
     if (!checkoutBypassGeofence) {
       if (checkoutValidationMode === 'officeIp') {
         const allowedIps = settings.allowedOfficeIps ?? [];
         if (allowedIps.length === 0 || !allowedIps.includes(input.clientIp ?? '')) {
-          throw new AppError('ATT_004', 422, 'Not connected to the approved office network.');
+          throw new AppError('ATT_009', 422, 'Not connected to the approved office network.');
         }
-      } else if (checkoutValidationMode === 'geofence' && hasCheckoutLocation) {
-        if (settings.geoFence.isEnabled && !checkoutIsWithinGeoFence) {
-          throw new AppError('ATT_001', 422, 'Outside geofence.');
-        }
+      } else if (locationRequired && !checkoutIsWithinGeoFence) {
+        throw new AppError('ATT_001', 422, 'Outside geofence.');
       }
     }
 
+    // Consume nonce (BR-ATT-11) — after cheap validation so a GPS failure does
+    // not burn the nonce; replay is still impossible (unique index).
+    try {
+      await UsedNonce.create({ nonce: input.nonce, employeeId: employeeOid, action: 'checkout' });
+    } catch (err) {
+      if (isMongooseDuplicateKey(err)) throw new AppError('ATT_004', 409, 'Nonce already used.');
+      throw err;
+    }
+
     // Compute duration
-    const durationMinutes = Math.round(
+    // Whole minutes actually elapsed (floor): never credits unworked seconds,
+    // and a check-out 1 s before the 24-hour deadline cannot read as "24 h".
+    const durationMinutes = Math.max(0, Math.floor(
       (serverTime.getTime() - activeSession.checkIn.timestamp.getTime()) / 60_000,
-    );
+    ));
 
-    // Load the attendance day
-    const day = await AttendanceDay.findById(activeSession.attendanceDayId);
-    if (!day) throw new AppError('GEN_002', 404, 'Attendance day record not found.');
+    let newTotalMinutes = 0;
+    let overtimeMinutes = 0;
+    let newStatus: AttendanceDayStatus = 'absent';
+    let dayDateString = activeSession.dateString;
 
-    const newTotalMinutes = day.totalMinutes + durationMinutes;
-    const overtimeMinutes = Math.max(0, newTotalMinutes - settings.requiredDailyMinutes);
-    const newStatus = deriveDayStatus(newTotalMinutes, day.isHalfDayCapped, day.status, settings);
-
-    // Transaction: close session + update day (BR-ATT-12)
+    // Transaction: close session + update day (BR-ATT-12). The session close is
+    // conditional on isActive:true so concurrent/duplicate checkouts cannot
+    // double-count minutes; minutes are added with $inc, not read-modify-write.
     const mongoSession = await mongoose.startSession();
     try {
       await mongoSession.withTransaction(async () => {
-        await AttendanceSession.findByIdAndUpdate(
-          activeSession._id,
+        // Conditional on still-active AND still inside the 24-hour window, so a
+        // check-out racing the deadline (or the reconciler) cannot both succeed.
+        const closed = await AttendanceSession.findOneAndUpdate(
+          {
+            _id: activeSession._id,
+            isActive: true,
+            'checkIn.timestamp': { $gt: new Date(serverTime.getTime() - MISSED_CHECKOUT_WINDOW_MS) },
+          },
           {
             $set: {
               isActive: false,
@@ -494,32 +683,41 @@ export class AttendanceService {
               checkOut: {
                 timestamp: serverTime,
                 nonce: input.nonce,
-                latitude: input.latitude ?? 0,
-                longitude: input.longitude ?? 0,
-                accuracy: input.accuracy ?? 0,
+                latitude: hasCheckoutLocation ? input.latitude! : 0,
+                longitude: hasCheckoutLocation ? input.longitude! : 0,
+                accuracy: hasCheckoutLocation ? input.accuracy! : 0,
                 distanceFromOffice: checkoutDistanceFromOffice,
-                deviceFingerprint: activeSession.checkIn.deviceFingerprint,
+                deviceFingerprint: fingerprint,
                 isWithinGeoFence: checkoutIsWithinGeoFence,
+                locationProvided: hasCheckoutLocation,
               },
             },
           },
-          { session: mongoSession },
+          { session: mongoSession, new: true },
         );
+        if (!closed) throw new AppError('ATT_005', 422, 'No active session found.');
+
+        const day = await AttendanceDay.findByIdAndUpdate(
+          activeSession.attendanceDayId,
+          { $inc: { totalMinutes: durationMinutes } },
+          { session: mongoSession, new: true },
+        );
+        if (!day) throw new AppError('GEN_002', 404, 'Attendance day record not found.');
+
+        newTotalMinutes = day.totalMinutes;
+        overtimeMinutes = Math.max(0, newTotalMinutes - settings.requiredDailyMinutes);
+        newStatus = deriveDayStatus(newTotalMinutes, day.isHalfDayCapped, day.status, settings);
+        dayDateString = day.dateString;
         await AttendanceDay.findByIdAndUpdate(
           day._id,
-          {
-            $set: {
-              totalMinutes: newTotalMinutes,
-              overtimeMinutes,
-              status: newStatus,
-            },
-          },
+          { $set: { overtimeMinutes, status: newStatus } },
           { session: mongoSession },
         );
       });
     } finally {
       await mongoSession.endSession();
     }
+    const day = { dateString: dayDateString };
 
     // Audit log
     await AuditLog.create({
@@ -549,51 +747,81 @@ export class AttendanceService {
   static async getStatus(employeeId: string) {
     await connectDB();
 
+    const now = new Date();
+    // Apply the 24-hour rule first so an overdue session is never reported as
+    // "checked in" (works even if the nightly cron has not run yet).
+    await reconcileMissedCheckouts({ employeeId, now });
+
     const settings = await CompanySettings.findById('company-settings').lean() as ICompanySettings | null;
     const timezone = settings?.timezone || 'Asia/Kolkata';
-    const dateString = toLocalDateString(new Date(), timezone);
+    const dateString = toLocalDateString(now, timezone);
+    const empOid = new mongoose.Types.ObjectId(employeeId);
 
-    const [day, activeSession, allSessions] = await Promise.all([
-      AttendanceDay.findOne({ employeeId: new mongoose.Types.ObjectId(employeeId), dateString }).lean(),
-      AttendanceSession.findOne({ employeeId: new mongoose.Types.ObjectId(employeeId), isActive: true }).lean(),
-      AttendanceSession.find({ employeeId: new mongoose.Types.ObjectId(employeeId), dateString }).lean(),
+    // Unresolved missed check-outs inside the regularization window (oldest
+    // actionable first is not needed — the most recent one drives the banner).
+    const lookbackDays = settings?.regularizationLookbackDays ?? 30;
+    const lookbackStart = toLocalDateString(new Date(now.getTime() - lookbackDays * 86_400_000), timezone);
+
+    const [day, activeSession, allSessions, unresolvedDays] = await Promise.all([
+      AttendanceDay.findOne({ employeeId: empOid, dateString }).lean(),
+      AttendanceSession.findOne({ employeeId: empOid, isActive: true }).lean(),
+      AttendanceSession.find({ employeeId: empOid, dateString }).lean(),
+      AttendanceDay.find({
+        employeeId: empOid,
+        hasUnresolvedMissedCheckout: true,
+        dateString: { $gte: lookbackStart },
+      }).sort({ dateString: -1 }).lean(),
     ]);
 
     const totalMinutes = day?.totalMinutes ?? 0;
     const requiredMinutes = settings?.requiredDailyMinutes ?? 540;
 
-    // Running minutes for active session; capped at 24 h.
-    // A session is stale when it started on a previous calendar day OR has been running ≥ 24 h.
-    // Stale = missed checkout: employee is treated as NOT checked-in so a new check-in is allowed
-    // without a forced regularisation.
-    const MAX_SESSION_MINUTES = 24 * 60;
-    const rawRunningMinutes = activeSession
-      ? Math.round((Date.now() - activeSession.checkIn.timestamp.getTime()) / 60_000)
+    const isCheckedIn = !!activeSession;
+    const runningMinutes = activeSession
+      ? Math.max(0, Math.floor((now.getTime() - activeSession.checkIn.timestamp.getTime()) / 60_000))
       : 0;
-    const isStale = !!activeSession && (activeSession.dateString !== dateString || rawRunningMinutes >= MAX_SESSION_MINUTES);
-    const forgotCheckout = isStale;
-    const runningMinutes = isStale ? MAX_SESSION_MINUTES : rawRunningMinutes;
-    const isCheckedIn = !!activeSession && !isStale;
 
-    const sessions = allSessions.map((s) => ({
+    // Banner data for the most recent unresolved missed check-out.
+    const latestMissed = (unresolvedDays ?? [])[0];
+    let staleSession: { dateString: string; checkInTimestamp: string | null } | null = null;
+    if (latestMissed) {
+      const missedSession = latestMissed.missedCheckoutSessionId
+        ? await AttendanceSession.findById(latestMissed.missedCheckoutSessionId).select('checkIn.timestamp').lean()
+        : null;
+      staleSession = {
+        dateString: latestMissed.dateString,
+        checkInTimestamp: missedSession?.checkIn?.timestamp?.toISOString() ?? null,
+      };
+    }
+
+    const sessions = (allSessions ?? []).map((s) => ({
       sessionId: (s._id as mongoose.Types.ObjectId).toHexString(),
       checkInTimestamp: s.checkIn.timestamp.toISOString(),
       checkInAddress: s.checkIn.address ?? null,
+      // Missed check-outs have no checkout and 0 minutes — never fabricated.
       checkOutTimestamp: s.checkOut ? s.checkOut.timestamp.toISOString() : null,
       durationMinutes: s.isActive ? runningMinutes : (s.durationMinutes ?? 0),
+      isActive: s.isActive === true,
       closedBySystem: s.closedBySystem,
+      missedCheckout: s.systemCloseReason === 'missed-checkout',
       isRemote: s.isRemote,
       ...(s.remoteSource !== undefined && { remoteSource: s.remoteSource }),
     }));
 
     return {
       isCheckedIn,
-      forgotCheckout,
+      // True while an unresolved missed check-out exists in the regularization
+      // window. Independent of isCheckedIn (the employee may already have
+      // started a new day).
+      forgotCheckout: !!latestMissed,
+      unresolvedMissedCheckoutDates: (unresolvedDays ?? []).map((d) => d.dateString),
       todayDateString: dateString,
       currentSession: isCheckedIn && activeSession
         ? {
             sessionId: (activeSession._id as mongoose.Types.ObjectId).toHexString(),
             checkInTimestamp: activeSession.checkIn.timestamp.toISOString(),
+            // Clients reset the timer to 00:00:00 at this instant and re-sync.
+            checkoutDeadline: checkoutDeadline(activeSession.checkIn.timestamp).toISOString(),
             checkInLocation: {
               latitude: activeSession.checkIn.latitude,
               longitude: activeSession.checkIn.longitude,
@@ -605,12 +833,7 @@ export class AttendanceService {
             ...(activeSession.remoteSource !== undefined && { remoteSource: activeSession.remoteSource }),
           }
         : null,
-      staleSession: isStale && activeSession
-        ? {
-            dateString: activeSession.dateString,
-            checkInTimestamp: activeSession.checkIn.timestamp.toISOString(),
-          }
-        : null,
+      staleSession,
       todaySummary: {
         totalMinutes,
         status: isCheckedIn ? 'checked-in' : (day?.status ?? 'absent'),
@@ -626,6 +849,7 @@ export class AttendanceService {
     query: { startDate: string; endDate: string; status?: string; page: number; limit: number },
   ) {
     await connectDB();
+    await reconcileMissedCheckouts({ employeeId });
 
     const settings = await CompanySettings.findById('company-settings').lean() as ICompanySettings | null;
     const timezone = settings?.timezone || 'Asia/Kolkata';
@@ -746,6 +970,7 @@ export class AttendanceService {
     limit: number;
   }) {
     await connectDB();
+    await reconcileMissedCheckouts();
 
     const settings = await CompanySettings.findById('company-settings').lean() as ICompanySettings | null;
     const timezone = settings?.timezone || 'Asia/Kolkata';
@@ -812,6 +1037,7 @@ export class AttendanceService {
 
   static async getWeekly(employeeId: string, weekStr?: string) {
     await connectDB();
+    await reconcileMissedCheckouts({ employeeId });
 
     const settings = await CompanySettings.findById('company-settings').lean() as ICompanySettings | null;
     const timezone = settings?.timezone || 'Asia/Kolkata';
@@ -862,6 +1088,7 @@ export class AttendanceService {
 
   static async getMonthly(employeeId: string, yearMonthStr?: string) {
     await connectDB();
+    await reconcileMissedCheckouts({ employeeId });
 
     const settings = await CompanySettings.findById('company-settings').lean() as ICompanySettings | null;
     const timezone = settings?.timezone || 'Asia/Kolkata';
@@ -915,81 +1142,15 @@ export class AttendanceService {
 
   // ─── Auto Close Sessions (midnight rollover cron) ─────────────────────────
 
-  static async autoCloseSessions(dateString: string): Promise<{ closed: number }> {
+  /**
+   * Scheduled sweep for the 24-hour missed-check-out rule. Idempotent: safe to
+   * run late, early, repeatedly or concurrently (Vercel may deliver a cron run
+   * more than once). Request paths call reconcileMissedCheckouts() too, so a
+   * delayed cron never delays what users see.
+   */
+  static async reconcileMissedCheckouts(now: Date = new Date()): Promise<{ expired: number }> {
     await connectDB();
-
-    const settings = await CompanySettings.findById('company-settings').lean() as ICompanySettings | null;
-    if (!settings) return { closed: 0 };
-
-    // Find all sessions that were active on the given date and are still active
-    const orphanedSessions = await AttendanceSession.find({
-      dateString,
-      isActive: true,
-    });
-
-    if (orphanedSessions.length === 0) return { closed: 0 };
-
-    // Compute work end time as the close timestamp
-    const [endH, endM] = settings.workEndTime.split(':').map(Number);
-    let closed = 0;
-
-    for (const session of orphanedSessions) {
-      // Cap duration: min(workEndTime, checkIn + 16h) - checkIn
-      const checkInDate = session.checkIn.timestamp;
-      const capDate = new Date(checkInDate);
-      capDate.setHours(endH, endM, 0, 0);
-      if (capDate <= checkInDate) capDate.setDate(capDate.getDate() + 1);
-
-      const maxDuration = 16 * 60;
-      const naturalDuration = Math.round((capDate.getTime() - checkInDate.getTime()) / 60_000);
-      const durationMinutes = Math.min(naturalDuration, maxDuration);
-
-      // Load day
-      const day = await AttendanceDay.findById(session.attendanceDayId);
-      if (!day) continue;
-
-      const newTotalMinutes = day.totalMinutes + durationMinutes;
-      const overtimeMinutes = Math.max(0, newTotalMinutes - settings.requiredDailyMinutes);
-      const newStatus = deriveDayStatus(newTotalMinutes, day.isHalfDayCapped, day.status, settings);
-
-      const mongoSession = await mongoose.startSession();
-      try {
-        await mongoSession.withTransaction(async () => {
-          await AttendanceSession.findByIdAndUpdate(
-            session._id,
-            {
-              $set: {
-                isActive: false,
-                closedBySystem: true,
-                systemCloseReason: 'midnight-rollover' as const,
-                durationMinutes,
-                checkOut: {
-                  timestamp: capDate,
-                  nonce: 'system-auto-close',
-                  latitude: 0,
-                  longitude: 0,
-                  accuracy: 0,
-                  distanceFromOffice: 0,
-                  deviceFingerprint: session.checkIn.deviceFingerprint,
-                  isWithinGeoFence: true,
-                },
-              },
-            },
-            { session: mongoSession },
-          );
-          await AttendanceDay.findByIdAndUpdate(
-            day._id,
-            { $set: { totalMinutes: newTotalMinutes, overtimeMinutes, status: newStatus } },
-            { session: mongoSession },
-          );
-        });
-        closed++;
-      } finally {
-        await mongoSession.endSession();
-      }
-    }
-
-    return { closed };
+    return reconcileMissedCheckouts({ now });
   }
 
   // ─── Admin List (§5.8) — cross-employee attendance list for admin portal ────
@@ -1005,6 +1166,7 @@ export class AttendanceService {
     limit: number;
   }) {
     await connectDB();
+    await reconcileMissedCheckouts();
 
     const filter: Record<string, unknown> = {};
 
@@ -1046,9 +1208,11 @@ export class AttendanceService {
     // Batch-fetch first check-in / last check-out for all returned days
     const dayIds = days.map((d) => d._id as mongoose.Types.ObjectId);
     const sessions = await AttendanceSession.find({ attendanceDayId: { $in: dayIds } })
-      .select('attendanceDayId checkIn.timestamp checkOut.timestamp')
+      .select('attendanceDayId checkIn.timestamp checkOut.timestamp systemCloseReason isActive')
       .sort({ 'checkIn.timestamp': 1 })
       .lean();
+    const adminSettings = await CompanySettings.findById('company-settings').lean() as ICompanySettings | null;
+    const adminTz = adminSettings?.timezone || 'Asia/Kolkata';
 
     const sessionsByDay = new Map<string, typeof sessions>();
     for (const s of sessions) {
@@ -1074,8 +1238,13 @@ export class AttendanceService {
         date:         (day.date as Date).toISOString(),
         dateString:   day.dateString,
         status:       day.status,
-        checkIn:      first  ? first.checkIn.timestamp.toISOString().slice(11, 16) : null,
-        checkOut:     (last && last.checkOut) ? last.checkOut.timestamp.toISOString().slice(11, 16) : null,
+        // HH:mm in the COMPANY timezone (was UTC — off by 5:30 for IST).
+        checkIn:      first  ? toLocalHHMM(first.checkIn.timestamp, adminTz) : null,
+        checkOut:     (last && last.checkOut) ? toLocalHHMM(last.checkOut.timestamp, adminTz) : null,
+        // Missed check-out: no punch-out exists (never fabricated).
+        missedCheckout: ss.some((x) => x.systemCloseReason === 'missed-checkout'),
+        hasUnresolvedMissedCheckout: day.hasUnresolvedMissedCheckout === true,
+        isCheckedIn:  ss.some((x) => x.isActive),
         workHours:    day.totalMinutes > 0 ? Math.round((day.totalMinutes / 60) * 10) / 10 : null,
         isRegularized: day.isRegularized,
         createdAt:    (day.createdAt as Date).toISOString(),

@@ -2,14 +2,14 @@ import { NextRequest, NextResponse } from 'next/server';
 import { ZodError } from 'zod';
 import { ResetPasswordSchema } from '@validators/auth';
 import { AuthService, AppError } from '@services/AuthService';
-import { authLimiter, getClientIp, checkRateLimit } from '@mw/rateLimiter';
+import { passwordResetConfirmLimiter, getClientIp, checkRateLimit } from '@mw/rateLimiter';
 import { success, apiError } from '@lib/utils/api-response';
 
 export const dynamic = 'force-dynamic';
 
 export async function POST(request: NextRequest): Promise<NextResponse> {
   const ip = getClientIp(request);
-  const limited = await checkRateLimit(authLimiter, ip);
+  const limited = await checkRateLimit(passwordResetConfirmLimiter, ip);
   if (limited) return limited;
 
   let body: unknown;

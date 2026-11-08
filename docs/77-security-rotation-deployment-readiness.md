@@ -76,8 +76,9 @@ All DIAG logs removed. No test routes remain. Static checks pass. APK build in p
 - **Where to rotate:** Generate locally: `openssl rand -hex 64`
 - **Local env var:** `JWT_SECRET` in `apps/admin/.env.local`
 - **Vercel env var:** `JWT_SECRET` — update in Vercel project settings
-- **Optional grace period:** Set old value as `JWT_SECRET_PREVIOUS` — proxy already supports this for token rotation. Existing logged-in users will not be forcibly logged out during the transition window.
-- **Expected behavior after rotation:** New logins receive tokens signed with new secret. Old tokens (signed with old secret) accepted only if `JWT_SECRET_PREVIOUS` is set. Remove `JWT_SECRET_PREVIOUS` after all users re-login.
+- **Do NOT set the exposed value as `JWT_SECRET_PREVIOUS`.** *(Corrected 2026-11-08, see doc 84.)* The old key is the compromised key: trusting it during a "grace period" lets anyone holding it keep minting valid access tokens. For an incident rotation leave `JWT_SECRET_PREVIOUS` **unset**.
+- `JWT_SECRET_PREVIOUS` exists only for *routine, non-compromise* rotation. Since doc 84 it is honoured only when `JWT_SECRET_PREVIOUS_EXPIRES_AT` is also set to a timestamp ≤ 24 h in the future, and it never rescues expired tokens.
+- **Expected behavior after rotation:** Access tokens (15-minute JWTs) signed with the old key stop working immediately. Refresh sessions are stored in MongoDB and are **not** derived from `JWT_SECRET`, so signed-in mobile/web users silently obtain a new access token and are **not** logged out. If you also want to end every existing session (recommended when the database credentials were exposed), that is a separate owner action — see doc 84 §Owner actions.
 - **Verify:** Login with admin credentials → 200 with `accessToken` → make authenticated API call → succeeds.
 - **Operator status:** ☐ NOT DONE
 
@@ -88,7 +89,7 @@ All DIAG logs removed. No test routes remain. Static checks pass. APK build in p
 - **Where to rotate:** Generate locally: `openssl rand -hex 64` (different value from JWT_SECRET)
 - **Local env var:** `JWT_REFRESH_SECRET` in `apps/admin/.env.local`
 - **Vercel env var:** `JWT_REFRESH_SECRET`
-- **Expected behavior:** Existing refresh tokens invalidated. Users must re-login once. Rotate same time as JWT_SECRET.
+- **Expected behavior (corrected 2026-11-08, see doc 84):** Until doc 84 this variable was **not used by the code at all** — refresh tokens are random values whose SHA-256 hashes are stored in `DeviceSession`; they were never signed with this secret, so rotating it did **not** invalidate anything. Since doc 84 it is used only to encrypt the short-lived "retry copy" of a just-rotated refresh token (1-hour grace window). Rotating it now only affects a client that lost a refresh response in the last hour (that client must sign in again). Still rotate it, because the old value was exposed.
 - **Verify:** After login, wait for access token expiry (15 min) or test refresh endpoint → new access token issued.
 - **Operator status:** ☐ NOT DONE
 

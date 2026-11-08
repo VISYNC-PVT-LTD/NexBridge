@@ -46,7 +46,7 @@
 | **Format** | 128-char hex string: `a3f19...` (64 random bytes → hex) |
 | **Local dev** | Required |
 | **Production** | Required |
-| **Notes** | Minimum 64 bytes (128 hex chars). Must differ from `JWT_SECRET_PREVIOUS`. If compromised: set old value as `JWT_SECRET_PREVIOUS`, generate new `JWT_SECRET` — existing sessions remain valid through rotation window. |
+| **Notes** | Minimum 64 bytes (128 hex chars). Must differ from `JWT_SECRET_PREVIOUS`. **If compromised: generate a new `JWT_SECRET` and leave `JWT_SECRET_PREVIOUS` UNSET** — never put a compromised key there (corrected 2026-11-08, docs/84). `JWT_SECRET_PREVIOUS` is only for routine rotation and is honoured only with `JWT_SECRET_PREVIOUS_EXPIRES_AT` ≤ 24 h ahead. |
 
 | Variable | `JWT_SECRET_PREVIOUS` |
 |----------|-----------------------|

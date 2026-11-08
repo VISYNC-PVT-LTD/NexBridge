@@ -66,6 +66,18 @@ export class SettingsService {
 
     if (Object.keys($set).length === 0) throw new AppError('GEN_001', 400, 'No fields to update.');
 
+    // Cross-field consistency against the values that will be in effect after
+    // this (partial) update.
+    const current = await CompanySettings.findById('company-settings').lean() as ICompanySettings | null;
+    const merged = { ...(current ?? {}), ...$set } as Partial<ICompanySettings>;
+    if (merged.halfDayThresholdMinutes !== undefined && merged.requiredDailyMinutes !== undefined
+        && merged.halfDayThresholdMinutes > merged.requiredDailyMinutes) {
+      throw new AppError('GEN_001', 400, 'halfDayThresholdMinutes cannot exceed requiredDailyMinutes.');
+    }
+    if (merged.workStartTime && merged.workEndTime && merged.workStartTime === merged.workEndTime) {
+      throw new AppError('GEN_001', 400, 'workStartTime and workEndTime cannot be equal.');
+    }
+
     const updated = await CompanySettings.findByIdAndUpdate(
       'company-settings',
       { $set },

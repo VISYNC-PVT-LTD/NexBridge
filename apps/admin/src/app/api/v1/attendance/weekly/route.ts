@@ -4,6 +4,7 @@ import { AttendanceWeeklyQuerySchema } from '@validators/attendance';
 import { AttendanceService } from '@services/AttendanceService';
 import { AppError } from '@services/AuthService';
 import { getAuthUser, AuthError } from '@mw/requireAuth';
+import { isAttendanceAdmin } from '@mw/requireRole';
 import { apiError, success } from '@lib/utils/api-response';
 
 export const dynamic = 'force-dynamic';
@@ -29,7 +30,7 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
   // Admin can query any employee; employee can only query self
   let targetEmployeeId = payload.userId;
   if (query.employeeId) {
-    if (payload.role !== 'admin') return apiError('AUTH_006', 'Forbidden.', 403);
+    if (!isAttendanceAdmin(payload.role)) return apiError('AUTH_006', 'Forbidden.', 403);
     targetEmployeeId = query.employeeId;
   }
 

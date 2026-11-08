@@ -40,6 +40,9 @@ export default function EntityPicker({
   const [open, setOpen] = useState(false);
   const [search, setSearch] = useState('');
   const [displayLabel, setDisplayLabel] = useState('');
+  const shownLabel = value ? displayLabel : '';
+  // Stable dependency key for the (often inline) extraQuery object.
+  const extraQueryKey = JSON.stringify(extraQuery ?? {});
   const [options, setOptions] = useState<EntityOption[]>([]);
   const [loading, setLoading] = useState(false);
   const [highlighted, setHighlighted] = useState(0);
@@ -56,7 +59,9 @@ export default function EntityPicker({
 
   // Resolve label when value is preset (edit mode)
   useEffect(() => {
-    if (!value) { setDisplayLabel(''); return; }
+    // No value → label is derived as '' at render time (see shownLabel), so no
+    // synchronous setState is needed inside the effect.
+    if (!value) return;
     let cancelled = false;
     apiFetch<{ success: boolean; data: EntityOption }>(`${endpoint}/${value}`)
       .then((res) => {
@@ -70,7 +75,8 @@ export default function EntityPicker({
   const fetchOptions = useCallback(async (term: string) => {
     setLoading(true);
     try {
-      const qp = new URLSearchParams({ search: term, limit: '10', isActive: 'true', ...extraQuery });
+      const extra = JSON.parse(extraQueryKey) as Record<string, string>;
+      const qp = new URLSearchParams({ search: term, limit: '10', isActive: 'true', ...extra });
       const res = await apiFetch<ApiListResp>(`${endpoint}?${qp.toString()}`);
       setOptions(res.data ?? []);
     } catch {
@@ -78,8 +84,7 @@ export default function EntityPicker({
     } finally {
       setLoading(false);
     }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [endpoint, JSON.stringify(extraQuery)]);
+  }, [endpoint, extraQueryKey]);
 
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     setSearch(e.target.value);
@@ -158,8 +163,8 @@ export default function EntityPicker({
             onClick={(e) => e.stopPropagation()}
           />
         ) : (
-          <span className={cn('flex-1 text-sm truncate', !displayLabel && 'text-gray-400')}>
-            {displayLabel || placeholder}
+          <span className={cn('flex-1 text-sm truncate', !shownLabel && 'text-gray-400')}>
+            {shownLabel || placeholder}
           </span>
         )}
         {allowClear && value && !open ? (

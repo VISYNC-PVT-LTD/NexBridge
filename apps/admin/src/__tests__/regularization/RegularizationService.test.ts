@@ -11,6 +11,8 @@ import { AttendanceSession } from '@models/AttendanceSession';
 import { CompanySettings } from '@models/CompanySettings';
 import { PayrollRecord } from '@models/PayrollRecord';
 import { AuditLog } from '@models/AuditLog';
+import { User } from '@models/User';
+import { NotificationService } from '@services/NotificationService';
 
 // ─── Fixtures ─────────────────────────────────────────────────────────────────
 
@@ -69,6 +71,8 @@ const employeePayload = { userId: EMP_ID, role: 'employee' as const, email: 'e@e
 
 beforeEach(() => {
   jest.restoreAllMocks();
+  jest.spyOn(NotificationService, 'create').mockResolvedValue(undefined as never);
+  jest.spyOn(NotificationService, 'notifyAllAdmins').mockResolvedValue(undefined as never);
 
   jest.spyOn(mongoose, 'startSession').mockResolvedValue({
     withTransaction: async (fn: () => Promise<void>) => { await fn(); },
@@ -79,6 +83,23 @@ beforeEach(() => {
   jest.spyOn(CompanySettings, 'findById').mockReturnValue({
     lean: jest.fn().mockResolvedValue(makeSettings()),
   } as unknown as ReturnType<typeof CompanySettings.findById>);
+  // Current contract defaults:
+  //  - create() checks existing sessions for the date (BR-REG-03)
+  //  - list() batch-loads employee names
+  //  - approve/reject/withdraw claim the request with a conditional
+  //    findOneAndUpdate({ status: 'pending' }); default = claim succeeds
+  //  - notifications are fire-and-forget (User.findById for email address)
+  jest.spyOn(AttendanceSession, 'find').mockReturnValue({
+    select: jest.fn().mockReturnThis(),
+    lean: jest.fn().mockResolvedValue([]),
+  } as unknown as ReturnType<typeof AttendanceSession.find>);
+  jest.spyOn(User, 'find').mockReturnValue({
+    lean: jest.fn().mockResolvedValue([]),
+  } as unknown as ReturnType<typeof User.find>);
+  jest.spyOn(User, 'findById').mockReturnValue({
+    lean: jest.fn().mockResolvedValue(null),
+  } as unknown as ReturnType<typeof User.findById>);
+  jest.spyOn(Regularization, 'findOneAndUpdate').mockResolvedValue({ _id: REG_OID } as never);
 });
 
 // ─── U-REG-01: create within lookback window ──────────────────────────────────
@@ -101,7 +122,7 @@ describe('U-REG-01', () => {
     });
 
     expect(result.status).toBe('pending');
-    expect(result.dateString).toBe(YESTERDAY);
+    expect(result.date).toBe(YESTERDAY); // API contract field is `date` (formatReg)
     expect(Regularization.create).toHaveBeenCalled();
     expect(AuditLog.create).toHaveBeenCalledWith(expect.objectContaining({ action: 'REGULARIZATION_CREATED' }));
   });
@@ -431,7 +452,9 @@ describe('U-REG-11', () => {
     } as unknown as ReturnType<typeof Regularization.findById>);
 
     const result = await RegularizationService.getById(REG_ID, employeePayload);
-    expect(result.id).toBe(REG_ID);
+    // API contract: formatReg() returns `_id` (consumed as `_id` by the mobile
+    // RegularizationRequest model and the admin portal list page).
+    expect(result._id).toBe(REG_ID);
   });
 
   it('throws 403 when employee fetches another employee request', async () => {
@@ -503,5 +526,100 @@ describe('U-REG-13', () => {
         input: { date: YESTERDAY, type: 'forgotCheckOut', requestedCheckOut: wrongDayISO, reason: 'Need correct checkout time please' },
       }),
     ).rejects.toMatchObject({ code: 'GEN_001', httpStatus: 400 });
+  });
+});
+
+// ─── Authorization: manager / executive are NOT HR admins ─────────────────────
+
+describe('U-REG-AUTHZ: non-HR-admin roles see only their own requests', () => {
+  const OTHER_ID = new mongoose.Types.ObjectId().toHexString();
+
+  it.each(['manager', 'executive'] as const)('%s list is scoped to own employeeId even with ?employeeId=', async (role) => {
+    jest.spyOn(Regularization, 'find').mockReturnValue({
+      sort: jest.fn().mockReturnThis(), skip: jest.fn().mockReturnThis(), limit: jest.fn().mockReturnThis(),
+      lean: jest.fn().mockResolvedValue([]),
+    } as unknown as ReturnType<typeof Regularization.find>);
+    jest.spyOn(Regularization, 'countDocuments').mockResolvedValue(0 as never);
+
+    await RegularizationService.list(
+      { page: 1, limit: 20, employeeId: EMP_ID } as never,
+      { ...employeePayload, userId: OTHER_ID, role },
+    );
+    const filter = (Regularization.find as jest.MockedFunction<typeof Regularization.find>).mock.calls[0][0] as Record<string, unknown>;
+    expect(String(filter.employeeId)).toBe(OTHER_ID);
+  });
+
+  it.each(['manager', 'executive'] as const)('%s cannot fetch another employee request by id', async (role) => {
+    jest.spyOn(Regularization, 'findById').mockReturnValue({
+      lean: jest.fn().mockResolvedValue(makeReg()),
+    } as unknown as ReturnType<typeof Regularization.findById>);
+    await expect(RegularizationService.getById(REG_ID, { ...employeePayload, userId: OTHER_ID, role }))
+      .rejects.toMatchObject({ httpStatus: 403 });
+  });
+
+  it.each(['admin', 'super_admin'] as const)('%s may filter by any employeeId', async (role) => {
+    jest.spyOn(Regularization, 'find').mockReturnValue({
+      sort: jest.fn().mockReturnThis(), skip: jest.fn().mockReturnThis(), limit: jest.fn().mockReturnThis(),
+      lean: jest.fn().mockResolvedValue([]),
+    } as unknown as ReturnType<typeof Regularization.find>);
+    jest.spyOn(Regularization, 'countDocuments').mockResolvedValue(0 as never);
+    await RegularizationService.list(
+      { page: 1, limit: 20, employeeId: EMP_ID } as never,
+      { ...employeePayload, userId: ADMIN_ID, role },
+    );
+    const filter = (Regularization.find as jest.MockedFunction<typeof Regularization.find>).mock.calls[0][0] as Record<string, unknown>;
+    expect(String(filter.employeeId)).toBe(EMP_ID);
+  });
+
+  it('invalid id returns GEN_002 instead of a CastError 500', async () => {
+    await expect(RegularizationService.getById('not-an-id', employeePayload)).rejects.toMatchObject({ code: 'GEN_002' });
+    await expect(RegularizationService.withdraw('not-an-id', EMP_ID)).rejects.toMatchObject({ code: 'GEN_002' });
+  });
+});
+
+// ─── Concurrency: state transitions are conditional on status: 'pending' ──────
+
+describe('U-REG-RACE: concurrent state changes', () => {
+  beforeEach(() => {
+    jest.spyOn(Regularization, 'findById').mockReturnValue({
+      lean: jest.fn().mockResolvedValue(makeReg()),
+    } as unknown as ReturnType<typeof Regularization.findById>);
+    jest.spyOn(PayrollRecord, 'findOne').mockReturnValue({
+      lean: jest.fn().mockResolvedValue(null),
+    } as unknown as ReturnType<typeof PayrollRecord.findOne>);
+  });
+
+  it('withdraw loses cleanly (REG_003) when an admin approved in between', async () => {
+    jest.spyOn(Regularization, 'findOneAndUpdate').mockResolvedValue(null as never);
+    await expect(RegularizationService.withdraw(REG_ID, EMP_ID)).rejects.toMatchObject({ code: 'REG_003' });
+    expect(AuditLog.create).not.toHaveBeenCalled();
+  });
+
+  it('withdraw update is conditional on owner and pending status', async () => {
+    await RegularizationService.withdraw(REG_ID, EMP_ID);
+    expect(Regularization.findOneAndUpdate).toHaveBeenCalledWith(
+      expect.objectContaining({ employeeId: EMP_OID, status: 'pending' }),
+      expect.anything(),
+      expect.anything(),
+    );
+  });
+
+  it('withdraw by a different employee is forbidden', async () => {
+    const other = new mongoose.Types.ObjectId().toHexString();
+    await expect(RegularizationService.withdraw(REG_ID, other)).rejects.toMatchObject({ httpStatus: 403 });
+  });
+
+  it('reject loses cleanly when the request was withdrawn in between', async () => {
+    jest.spyOn(Regularization, 'findOneAndUpdate').mockResolvedValue(null as never);
+    await expect(RegularizationService.reject(REG_ID, ADMIN_ID, 'x')).rejects.toMatchObject({ code: 'REG_003' });
+  });
+
+  it('second concurrent approval aborts before touching attendance', async () => {
+    jest.spyOn(Regularization, 'findOneAndUpdate').mockResolvedValue(null as never);
+    const dayUpsert = jest.spyOn(AttendanceDay, 'findOneAndUpdate');
+    const sessionCreate = jest.spyOn(AttendanceSession, 'create');
+    await expect(RegularizationService.approve(REG_ID, ADMIN_ID)).rejects.toMatchObject({ code: 'REG_003' });
+    expect(dayUpsert).not.toHaveBeenCalled();
+    expect(sessionCreate).not.toHaveBeenCalled();
   });
 });

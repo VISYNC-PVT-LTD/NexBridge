@@ -6,6 +6,8 @@ const createJestConfig = nextJest({ dir: './' });
 const config = {
   coverageProvider: 'v8',
   testEnvironment: 'node',
+  // Isolation: sanitise env + block outbound network BEFORE any app module loads.
+  setupFiles: ['<rootDir>/jest.env.ts', '<rootDir>/jest.network-guard.ts'],
   setupFilesAfterEnv: ['<rootDir>/jest.setup.ts'],
   moduleNameMapper: {
     '^@/(.*)$': '<rootDir>/src/$1',

@@ -11,13 +11,14 @@ import { AttendanceDay } from '@models/AttendanceDay';
 import { Holiday } from '@models/Holiday';
 import { PayrollRecord } from '@models/PayrollRecord';
 import { AuditLog } from '@models/AuditLog';
-import { NotificationService } from '@services/NotificationService';
+import { NotificationService, logNotificationFailure } from '@services/NotificationService';
 import type { IPayrollRecord, IEmployeeSnapshot, IStatutoryDeductions } from '@models/PayrollRecord';
 import type { IEmployee } from '@models/Employee';
 import type { IUser } from '@models/User';
 import type { ICompanySettings, IStatutoryConfig } from '@models/CompanySettings';
 import type { PayrollListQuery, PayrollMeQuery } from '@validators/payroll';
 import { PayrollLockService } from '@services/PayrollLockService';
+import { reconcileMissedCheckouts } from '@services/AttendanceService';
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -265,6 +266,9 @@ export class PayrollService {
   static async compute(params: { yearMonth: string; employeeId?: string; actorId: string }) {
     await connectDB();
     await PayrollLockService.assertUnlocked(params.yearMonth);
+    // Apply the 24-hour missed-check-out rule so no overdue open session is
+    // treated as work time (docs/85). Absent days follow the existing payroll rules.
+    await reconcileMissedCheckouts();
 
     const currentYearMonth = getCurrentMonthIST();
     if (params.yearMonth > currentYearMonth) {
@@ -356,7 +360,7 @@ export class PayrollService {
           referenceId:   record._id,
           emailAddress:  empUser?.email,
           emailName:     empUser ? `${empUser.firstName} ${empUser.lastName}` : undefined,
-        });
+        }).catch(logNotificationFailure);
       }
     })();
 
@@ -444,7 +448,10 @@ export class PayrollService {
     if (!employee) throw new AppError('GEN_002', 404, 'Employee record not found.');
 
     const joiningYM = yearMonthOf(employee.joiningDate);
-    const filter: Record<string, unknown> = { employeeId: employee._id, yearMonth: { $gte: joiningYM } };
+    // Employees see only FINALISED payslips. Drafts are admin working copies
+    // that can still be recomputed/adjusted (and unfinalised records revert to
+    // draft), so exposing them would show provisional, possibly wrong figures.
+    const filter: Record<string, unknown> = { employeeId: employee._id, yearMonth: { $gte: joiningYM }, status: 'finalised' };
     if (params.query.yearMonth) {
       if (params.query.yearMonth < joiningYM) {
         throw new AppError('AUTH_006', 403, 'Payroll not available for months before joining date.');
@@ -475,7 +482,8 @@ export class PayrollService {
       throw new AppError('AUTH_006', 403, 'Payroll not available for months before joining date.');
     }
 
-    const record = await PayrollRecord.findOne({ employeeId: employee._id, yearMonth: params.yearMonth }).lean() as unknown as (IPayrollRecord & { _id: mongoose.Types.ObjectId }) | null;
+    // Draft (not yet finalised) records are indistinguishable from "not found" for employees.
+    const record = await PayrollRecord.findOne({ employeeId: employee._id, yearMonth: params.yearMonth, status: 'finalised' }).lean() as unknown as (IPayrollRecord & { _id: mongoose.Types.ObjectId }) | null;
     if (!record) throw new AppError('PAY_002', 404, 'Payroll record not found.');
     return formatRecord(record);
   }

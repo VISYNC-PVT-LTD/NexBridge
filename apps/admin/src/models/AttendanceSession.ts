@@ -20,13 +20,16 @@ export interface ICheckInData extends IGeoPoint {
 export interface ICheckOutData {
   timestamp: Date;
   nonce: string;
-  // GPS not collected at checkout per API spec §5.2 — stored as 0 values
+  // Coordinates are REQUIRED at checkout for ordinary employees under an enabled
+  // geofence (docs/84). Otherwise optional; when absent they are stored as 0 with
+  // locationProvided=false and isWithinGeoFence=false.
   latitude: number;
   longitude: number;
   accuracy: number;
   distanceFromOffice: number;
   deviceFingerprint: string;
   isWithinGeoFence: boolean;
+  locationProvided?: boolean;
 }
 
 export interface IAttendanceFlags {
@@ -36,7 +39,9 @@ export interface IAttendanceFlags {
   possibleMockGps: boolean;
 }
 
-export type SystemCloseReason = 'midnight-rollover' | 'admin-force-close';
+// 'midnight-rollover' is legacy (pre-docs/85 work-end crediting); new code
+// writes 'missed-checkout' (24-hour rule, no fabricated checkout).
+export type SystemCloseReason = 'midnight-rollover' | 'admin-force-close' | 'missed-checkout';
 
 export interface IAttendanceSession extends Document {
   employeeId: mongoose.Types.ObjectId;
@@ -50,6 +55,9 @@ export interface IAttendanceSession extends Document {
   isActive: boolean;
   closedBySystem: boolean;
   systemCloseReason?: SystemCloseReason;
+  /** checkIn + 24 h — set when the session became a missed check-out. */
+  missedCheckoutDeadline?: Date;
+  missedCheckoutDetectedAt?: Date;
 
   flags: IAttendanceFlags;
 
@@ -87,7 +95,10 @@ const CheckOutSchema = new Schema<ICheckOutData>(
     timestamp:          { type: Date,   required: true },
     nonce:              { type: String, required: true },
     deviceFingerprint:  { type: String, required: true, default: '' },
-    isWithinGeoFence:   { type: Boolean, required: true, default: true },
+    // Default false: a checkout without verified coordinates is never "inside".
+    isWithinGeoFence:   { type: Boolean, required: true, default: false },
+    // false when the client sent no coordinates (override / office-IP / system close).
+    locationProvided:   { type: Boolean },
   },
   { _id: false },
 );
@@ -114,7 +125,9 @@ const AttendanceSessionSchema = new Schema<IAttendanceSession>(
     durationMinutes:   { type: Number,  default: null, min: 0 },
     isActive:          { type: Boolean, required: true, default: true },
     closedBySystem:    { type: Boolean, required: true, default: false },
-    systemCloseReason: { type: String,  enum: ['midnight-rollover', 'admin-force-close'] },
+    systemCloseReason: { type: String,  enum: ['midnight-rollover', 'admin-force-close', 'missed-checkout'] },
+    missedCheckoutDeadline:   { type: Date },
+    missedCheckoutDetectedAt: { type: Date },
 
     flags: {
       type: FlagsSchema,
@@ -137,6 +150,8 @@ AttendanceSessionSchema.index(
 AttendanceSessionSchema.index({ employeeId: 1, dateString: 1 });
 AttendanceSessionSchema.index({ employeeId: 1, isActive: 1 });
 AttendanceSessionSchema.index({ attendanceDayId: 1 });
+// Missed-check-out reconciliation: active sessions ordered by check-in time.
+AttendanceSessionSchema.index({ isActive: 1, 'checkIn.timestamp': 1 });
 
 export const AttendanceSession: Model<IAttendanceSession> =
   (mongoose.models['AttendanceSession'] as Model<IAttendanceSession>) ??

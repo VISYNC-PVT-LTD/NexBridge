@@ -10,12 +10,14 @@ import { PayrollRecord } from '@models/PayrollRecord';
 import { AuditLog } from '@models/AuditLog';
 import { User } from '@models/User';
 import { Employee } from '@models/Employee';
-import { NotificationService } from '@services/NotificationService';
+import { NotificationService, logNotificationFailure } from '@services/NotificationService';
 import { computeDayStatus } from '@engines/DayStatusEngine';
+import { reconcileMissedCheckouts } from '@services/AttendanceService';
 import type { IRegularization } from '@models/Regularization';
 import type { ICompanySettings } from '@models/CompanySettings';
 import type { CreateRegularizationInput, RegularizationListQuery } from '@validators/regularization';
 import type { JwtPayload } from '@app-types/jwt';
+import { isAttendanceAdmin } from '@mw/requireRole';
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -123,6 +125,7 @@ async function reconcileForSession(
         lateByMinutes:   result.lateByMinutes,
         isHalfDayCapped: result.isHalfDayCapped,
         isRegularized:   true,
+        hasUnresolvedMissedCheckout: false,
       },
     },
     { session },
@@ -142,6 +145,9 @@ export class RegularizationService {
     input: CreateRegularizationInput;
   }) {
     await connectDB();
+    // Apply the 24-hour rule first so an overdue session is recognised as a
+    // missed check-out that this request can correct.
+    await reconcileMissedCheckouts({ employeeId: params.employeeId });
     const settings = await getSettings();
 
     const { employeeId, input } = params;
@@ -196,7 +202,7 @@ export class RegularizationService {
     // forgotCheckOut requires a missed-checkout session (still active, or closed by midnight rollover)
     if (input.type === 'forgotCheckOut') {
       const hasEligibleSession = sessions.some(
-        (s) => s.isActive || (s.closedBySystem && s.systemCloseReason === 'midnight-rollover'),
+        (s) => s.isActive || (s.closedBySystem && (s.systemCloseReason === 'midnight-rollover' || s.systemCloseReason === 'missed-checkout')),
       );
       if (!hasEligibleSession) {
         throw new AppError('REG_005', 422, 'No missed-checkout session found for this date. If you were absent, please apply for leave instead.');
@@ -226,7 +232,7 @@ export class RegularizationService {
       body:          `An employee has submitted an attendance regularization request for ${input.date}.`,
       referenceType: 'regularizationRequest',
       referenceId:   reg._id as mongoose.Types.ObjectId,
-    });
+    }).catch(logNotificationFailure);
 
     return formatReg(reg as IRegularization & { _id: mongoose.Types.ObjectId });
   }
@@ -237,6 +243,7 @@ export class RegularizationService {
     await connectDB();
     const settings = await getSettings();
 
+    if (!mongoose.isValidObjectId(id)) throw new AppError('GEN_002', 404, 'Regularization request not found.');
     const reg = await Regularization.findById(id).lean() as (IRegularization & { _id: mongoose.Types.ObjectId }) | null;
     if (!reg) throw new AppError('GEN_002', 404, 'Regularization request not found.');
     if (reg.status !== 'pending') throw new AppError('REG_003', 422, 'Only pending requests can be approved.');
@@ -258,6 +265,17 @@ export class RegularizationService {
 
     try {
       await dbSession.withTransaction(async () => {
+        // ── Atomically claim the request (pending → approved) ──────────────
+        // Concurrent approve/reject/withdraw: only the first conditional update
+        // matches; the loser gets REG_003 and its transaction applies nothing
+        // (no duplicate synthetic session, no double day update).
+        const claimed = await Regularization.findOneAndUpdate(
+          { _id: reg._id, status: 'pending' },
+          { $set: { status: 'approved', reviewedBy: adminOid, reviewedAt: new Date() } },
+          { session: dbSession, new: true },
+        );
+        if (!claimed) throw new AppError('REG_003', 422, 'Only pending requests can be approved.');
+
         // ── Upsert AttendanceDay ────────────────────────────────────────────
         const dayUpsert = await AttendanceDay.findOneAndUpdate(
           { employeeId: employeeOid, dateString },
@@ -323,6 +341,7 @@ export class RegularizationService {
               $set: {
                 status:                  'present',
                 isRegularized:           true,
+                hasUnresolvedMissedCheckout: false,
                 regularizationRequestId: reg._id,
               },
             },
@@ -340,7 +359,7 @@ export class RegularizationService {
               dateString,
               $or: [
                 { isActive: true },
-                { isActive: false, closedBySystem: true, systemCloseReason: 'midnight-rollover' },
+                { isActive: false, closedBySystem: true, systemCloseReason: { $in: ['midnight-rollover', 'missed-checkout'] } },
               ],
             },
           ).sort({ createdAt: -1 }).session(dbSession).lean();
@@ -349,8 +368,17 @@ export class RegularizationService {
             throw new AppError('REG_006', 422, 'No session found for forgot-checkout regularization. No active or midnight-rolled session exists for this date.');
           }
 
-          const checkOutTs   = reg.requestedCheckOut ?? new Date();
           const checkInTs    = targetSession.checkIn.timestamp;
+          // A missed check-out is only corrected with the employee's stated,
+          // admin-approved time: it must exist, follow the check-in and fall
+          // within the 24-hour window. Nothing is invented.
+          if (!reg.requestedCheckOut) {
+            throw new AppError('REG_007', 422, 'A requested check-out time is required to correct a missed check-out.');
+          }
+          const checkOutTs = reg.requestedCheckOut;
+          if (checkOutTs.getTime() <= checkInTs.getTime() || checkOutTs.getTime() - checkInTs.getTime() > 24 * 60 * 60 * 1000) {
+            throw new AppError('REG_007', 422, 'Requested check-out must be after the check-in and within 24 hours of it.');
+          }
           const durationMins = Math.max(0, Math.round((checkOutTs.getTime() - checkInTs.getTime()) / 60000));
 
           await AttendanceSession.findByIdAndUpdate(
@@ -392,6 +420,7 @@ export class RegularizationService {
               $set: {
                 status:                  'present',
                 isRegularized:           true,
+                hasUnresolvedMissedCheckout: false,
                 regularizationRequestId: reg._id,
               },
             },
@@ -400,17 +429,10 @@ export class RegularizationService {
           updatedDayStatus = 'present';
         }
 
-        // ── Update regularization status ─────────────────────────────────
+        // ── Link the attendance day to the (already claimed) request ──────
         await Regularization.findByIdAndUpdate(
           reg._id,
-          {
-            $set: {
-              status:         'approved',
-              reviewedBy:     adminOid,
-              reviewedAt:     new Date(),
-              attendanceDayId,
-            },
-          },
+          { $set: { attendanceDayId } },
           { session: dbSession },
         );
       });
@@ -482,20 +504,27 @@ export class RegularizationService {
   static async reject(id: string, adminId: string, reason?: string) {
     await connectDB();
 
+    if (!mongoose.isValidObjectId(id)) throw new AppError('GEN_002', 404, 'Regularization request not found.');
     const reg = await Regularization.findById(id).lean() as (IRegularization & { _id: mongoose.Types.ObjectId }) | null;
     if (!reg) throw new AppError('GEN_002', 404, 'Regularization request not found.');
     if (reg.status !== 'pending') throw new AppError('REG_003', 422, 'Only pending requests can be rejected.');
 
     const adminOid = new mongoose.Types.ObjectId(adminId);
 
-    await Regularization.findByIdAndUpdate(id, {
-      $set: {
-        status:       'rejected',
-        reviewedBy:   adminOid,
-        reviewedAt:   new Date(),
-        reviewRemark: reason,
+    // Conditional update — a concurrent approve/withdraw cannot be overwritten.
+    const updated = await Regularization.findOneAndUpdate(
+      { _id: reg._id, status: 'pending' },
+      {
+        $set: {
+          status:       'rejected',
+          reviewedBy:   adminOid,
+          reviewedAt:   new Date(),
+          reviewRemark: reason,
+        },
       },
-    });
+      { new: true },
+    );
+    if (!updated) throw new AppError('REG_003', 422, 'Only pending requests can be rejected.');
 
     await AuditLog.create({
       performedBy: adminOid,
@@ -528,15 +557,20 @@ export class RegularizationService {
   static async withdraw(id: string, employeeId: string) {
     await connectDB();
 
+    if (!mongoose.isValidObjectId(id)) throw new AppError('GEN_002', 404, 'Regularization request not found.');
     const employeeOid = new mongoose.Types.ObjectId(employeeId);
     const reg = await Regularization.findById(id).lean() as (IRegularization & { _id: mongoose.Types.ObjectId }) | null;
     if (!reg) throw new AppError('GEN_002', 404, 'Regularization request not found.');
     if (!reg.employeeId.equals(employeeOid)) throw new AppError('AUTH_006', 403, 'Not authorized to withdraw this request.');
     if (reg.status !== 'pending') throw new AppError('REG_003', 422, 'Only pending requests can be withdrawn.');
 
-    await Regularization.findByIdAndUpdate(id, {
-      $set: { status: 'withdrawn', withdrawnAt: new Date() },
-    });
+    // Conditional on owner + pending: a concurrent approval/rejection wins cleanly.
+    const updated = await Regularization.findOneAndUpdate(
+      { _id: reg._id, employeeId: employeeOid, status: 'pending' },
+      { $set: { status: 'withdrawn', withdrawnAt: new Date() } },
+      { new: true },
+    );
+    if (!updated) throw new AppError('REG_003', 422, 'Only pending requests can be withdrawn.');
 
     await AuditLog.create({
       performedBy: employeeOid,
@@ -553,10 +587,12 @@ export class RegularizationService {
   static async getById(id: string, payload: JwtPayload) {
     await connectDB();
 
+    if (!mongoose.isValidObjectId(id)) throw new AppError('GEN_002', 404, 'Regularization request not found.');
     const reg = await Regularization.findById(id).lean() as (IRegularization & { _id: mongoose.Types.ObjectId }) | null;
     if (!reg) throw new AppError('GEN_002', 404, 'Regularization request not found.');
 
-    if (payload.role === 'employee') {
+    // Only HR admins may view other employees' requests (manager/executive: own only).
+    if (!isAttendanceAdmin(payload.role)) {
       const employeeOid = new mongoose.Types.ObjectId(payload.userId);
       if (!reg.employeeId.equals(employeeOid)) {
         throw new AppError('AUTH_006', 403, 'Not authorized to view this request.');
@@ -573,7 +609,9 @@ export class RegularizationService {
 
     const filter: Record<string, unknown> = {};
 
-    if (payload.role === 'employee') {
+    // Non-HR-admin roles (employee, manager, executive) are always scoped to
+    // their own requests; an employeeId query parameter cannot widen that.
+    if (!isAttendanceAdmin(payload.role)) {
       filter.employeeId = new mongoose.Types.ObjectId(payload.userId);
     } else if (query.employeeId) {
       filter.employeeId = new mongoose.Types.ObjectId(query.employeeId);

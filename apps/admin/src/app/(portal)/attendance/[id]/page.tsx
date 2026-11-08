@@ -6,6 +6,14 @@ import StatusBadge from '@components/shared/StatusBadge';
 import { Skeleton } from '@components/ui/skeleton';
 import { useAttendanceRecord } from '@/hooks/useAttendance';
 
+type HistoryDay = {
+  dateString: string;
+  status: string;
+  totalMinutes: number;
+  hasUnresolvedMissedCheckout?: boolean;
+  sessions?: Array<{ checkInTimestamp: string; checkOutTimestamp: string | null; missedCheckout?: boolean }>;
+};
+
 export default function AttendanceEmployeePage() {
   const { id } = useParams<{ id: string }>();
   const { record, isLoading, error } = useAttendanceRecord(id);
@@ -25,7 +33,7 @@ export default function AttendanceEmployeePage() {
     );
   }
 
-  const records = Array.isArray(record) ? record : [record];
+  const records = (Array.isArray(record) ? record : [record]) as unknown as HistoryDay[];
 
   return (
     <AdminLayout breadcrumb={[{ label: 'Attendance', href: '/attendance' }, { label: 'Employee Attendance' }]}>
@@ -41,15 +49,28 @@ export default function AttendanceEmployeePage() {
               </tr>
             </thead>
             <tbody>
-              {records.map((r: { _id: string; date: string; status: string; checkIn?: string; checkOut?: string; workHours?: number }) => (
-                <tr key={r._id} className="border-b border-gray-100">
-                  <td className="px-4 py-3">{format(parseISO(r.date), 'dd MMM yyyy')}</td>
-                  <td className="px-4 py-3"><StatusBadge status={r.status} /></td>
-                  <td className="px-4 py-3 font-mono text-xs">{r.checkIn  ?? '—'}</td>
-                  <td className="px-4 py-3 font-mono text-xs">{r.checkOut ?? '—'}</td>
-                  <td className="px-4 py-3">{r.workHours != null ? `${r.workHours}h` : '—'}</td>
-                </tr>
-              ))}
+              {records.map((r: HistoryDay) => {
+                // Contract: GET /api/v1/attendance/:employeeId returns history day
+                // records (dateString + sessions), not admin-list rows.
+                const sessions = r.sessions ?? [];
+                const first = sessions[0];
+                const last = sessions[sessions.length - 1];
+                const fmt = (iso?: string | null) => (iso ? format(parseISO(iso), 'HH:mm') : null);
+                const missed = sessions.some((x) => x.missedCheckout);
+                return (
+                  <tr key={r.dateString} className="border-b border-gray-100">
+                    <td className="px-4 py-3">{format(parseISO(r.dateString), 'dd MMM yyyy')}</td>
+                    <td className="px-4 py-3"><StatusBadge status={r.status} /></td>
+                    <td className="px-4 py-3 font-mono text-xs">{fmt(first?.checkInTimestamp) ?? '—'}</td>
+                    <td className="px-4 py-3 font-mono text-xs">
+                      {fmt(last?.checkOutTimestamp) ?? (missed
+                        ? <span className="font-sans text-red-600">Missed{r.hasUnresolvedMissedCheckout ? ' (unresolved)' : ''}</span>
+                        : '—')}
+                    </td>
+                    <td className="px-4 py-3">{r.totalMinutes > 0 ? `${Math.round((r.totalMinutes / 60) * 10) / 10}h` : '—'}</td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>

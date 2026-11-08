@@ -3123,3 +3123,21 @@ export interface JwtPayload {
 |---|---|---|
 | v1.0 | 2026-06-14 | Initial API specification — 68 endpoints, 39 error codes, all modules |
 | v1.1 | 2026-06-14 | Remediation of 5 HIGH findings — 69 endpoints, 40 error codes; added bulk notification mark-read; removed dual fingerprint transport from checkin; SHA-256 for password reset tokens; forced password change on first login (`requiresPasswordChange`, `AUTH_010`, `JwtPayload`); payroll routes use `:id` (ObjectId) not `:employeeId` |
+
+---
+
+> **Contract changes 2026-11-08** — see `docs/84-security-attendance-hardening.md` §4:
+> refresh-token rotation (`POST /auth/refresh` returns `refreshToken`), optional
+> `sessionId` on change-password, checkout requires `X-Device-Fingerprint` and (for
+> ordinary geofence employees) GPS (`ATT_010`), office-network denial is `ATT_009`,
+> cookie-authenticated cross-origin mutations return `403 AUTH_012`,
+> `/payroll/me*` returns finalised records only, cron paths accept GET and POST.
+
+> **Contract changes 2026-11-08 (b)** — see `docs/85-missed-checkout-24h-rule-and-acceptance.md`:
+> 24-hour missed check-out rule. `GET /attendance/status` adds `currentSession.checkoutDeadline`,
+> `unresolvedMissedCheckoutDates`; `forgotCheckout`/`staleSession` now describe an unresolved
+> missed check-out on a past day. Sessions add `isActive`, `missedCheckout`; day records add
+> `hasUnresolvedMissedCheckout`. `POST /attendance/checkout` at/after the deadline → `422 ATT_011`.
+> Admin list rows add `missedCheckout`, `hasUnresolvedMissedCheckout`, `isCheckedIn`, and times are in the
+> company timezone. Regularization approve: `REG_007`. Leave apply: past dates allowed only for
+> unresolved missed check-out days. Cron returns `sessionsExpired`.

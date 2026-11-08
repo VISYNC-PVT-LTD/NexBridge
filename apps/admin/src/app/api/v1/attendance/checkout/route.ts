@@ -39,6 +39,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
   try {
     const result = await AttendanceService.checkOut({
       employeeId: payload.userId,
+      deviceFingerprintHeader: request.headers.get('X-Device-Fingerprint') ?? '',
       nonce: parsed.nonce,
       clientTimestamp: parsed.timestamp,
       clientIp: getClientIp(request),

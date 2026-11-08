@@ -1,5 +1,6 @@
 import mongoose from 'mongoose';
 import type { UserRole } from '@app-types/enums';
+import { isAttendanceAdmin } from '@mw/requireRole';
 import { connectDB } from '@lib/db/connect';
 import { getLeaveYearBoundaries, dateRange, weekdayOf } from '@lib/utils/leaveUtils';
 import { AppError } from '@services/AuthService';
@@ -12,7 +13,7 @@ import { AttendanceDay } from '@models/AttendanceDay';
 import { AttendanceSession } from '@models/AttendanceSession';
 import { PayrollRecord } from '@models/PayrollRecord';
 import { AuditLog } from '@models/AuditLog';
-import { NotificationService } from '@services/NotificationService';
+import { NotificationService, logNotificationFailure } from '@services/NotificationService';
 import type { ICompanySettings } from '@models/CompanySettings';
 import type { ILeave, LeaveType, HalfDayPeriod } from '@models/Leave';
 import type { IUser, ILeaveTypeBalance } from '@models/User';
@@ -89,7 +90,25 @@ export class LeaveService {
     const todayStr  = now.toISOString().slice(0, 10);
 
     if (params.startDate < todayStr) {
-      throw new AppError('GEN_001', 400, 'Leave cannot be applied for past dates.');
+      // Narrow exception (docs/85): a past working day may be covered by leave
+      // ONLY to resolve an unresolved 24-hour missed check-out, within the
+      // regularization lookback window. Everything else stays forbidden.
+      const lookbackDays = settings.regularizationLookbackDays ?? 30;
+      const oldestAllowed = new Date(now.getTime() - lookbackDays * 86_400_000).toISOString().slice(0, 10);
+      if (params.endDate >= todayStr || params.startDate < oldestAllowed) {
+        throw new AppError('GEN_001', 400, 'Leave cannot be applied for past dates.');
+      }
+      const pastDates = dateRange(new Date(params.startDate + 'T00:00:00Z'), new Date(params.endDate + 'T00:00:00Z'));
+      const workingPast = pastDates.filter((d) =>
+        new Set((settings.workingDays ?? ['monday','tuesday','wednesday','thursday','friday']) as string[]).has(weekdayOf(d)));
+      const missedDays = await AttendanceDay.countDocuments({
+        employeeId: new mongoose.Types.ObjectId(params.employeeId),
+        dateString: { $in: workingPast },
+        hasUnresolvedMissedCheckout: true,
+      });
+      if (workingPast.length === 0 || missedDays !== workingPast.length) {
+        throw new AppError('GEN_001', 400, 'Leave cannot be applied for past dates (except to resolve a missed check-out).');
+      }
     }
     if (params.endDate < params.startDate) {
       throw new AppError('GEN_001', 400, 'endDate must be >= startDate.');
@@ -172,7 +191,7 @@ export class LeaveService {
       body:          `An employee has submitted a ${params.leaveType} leave request for ${params.startDate}.`,
       referenceType: 'leaveRequest',
       referenceId:   leave._id as mongoose.Types.ObjectId,
-    });
+    }).catch(logNotificationFailure);
 
     return {
       id:            (leave._id as mongoose.Types.ObjectId).toHexString(),
@@ -196,7 +215,9 @@ export class LeaveService {
 
     const filter: Record<string, unknown> = {};
 
-    if (params.role === 'employee') {
+    // Only HR admins (admin/super_admin) may list other employees' leave;
+    // employee/manager/executive are always scoped to their own records.
+    if (!isAttendanceAdmin(params.role)) {
       filter['employeeId'] = new mongoose.Types.ObjectId(params.actorId);
     } else if (params.employeeId) {
       filter['employeeId'] = new mongoose.Types.ObjectId(params.employeeId);
@@ -219,7 +240,7 @@ export class LeaveService {
     // Batch-fetch employee names for admin
     const empIds = [...new Set(leaves.map((l: { employeeId: mongoose.Types.ObjectId }) => l.employeeId.toHexString()))];
     let nameMap: Record<string, string> = {};
-    if (params.role === 'admin' && empIds.length > 0) {
+    if (isAttendanceAdmin(params.role) && empIds.length > 0) {
       const users = await User.find({ _id: { $in: empIds } }, 'firstName lastName').lean() as unknown as Array<{ _id: mongoose.Types.ObjectId; firstName: string; lastName: string }>;
       nameMap = Object.fromEntries(users.map(u => [u._id.toHexString(), `${u.firstName} ${u.lastName}`]));
     }
@@ -241,10 +262,11 @@ export class LeaveService {
   static async getById(leaveId: string, actorId: string, role: UserRole) {
     await connectDB();
 
+    if (!mongoose.isValidObjectId(leaveId)) throw new AppError('GEN_002', 404, 'Leave request not found.');
     const leave = await Leave.findById(leaveId).lean() as (ILeave & { _id: mongoose.Types.ObjectId }) | null;
     if (!leave) throw new AppError('GEN_002', 404, 'Leave request not found.');
 
-    if (role === 'employee' && leave.employeeId.toHexString() !== actorId) {
+    if (!isAttendanceAdmin(role) && leave.employeeId.toHexString() !== actorId) {
       throw new AppError('AUTH_006', 403, 'Access denied.');
     }
 
@@ -266,8 +288,13 @@ export class LeaveService {
       throw new AppError('LVE_007', 422, 'Only pending leave requests can be cancelled.');
     }
 
-    leave.status = 'cancelled';
-    await leave.save();
+    // Conditional update — an approval racing with the cancel wins cleanly.
+    const cancelled = await Leave.findOneAndUpdate(
+      { _id: leave._id, employeeId: leave.employeeId, status: 'pending' },
+      { $set: { status: 'cancelled' } },
+      { new: true },
+    );
+    if (!cancelled) throw new AppError('LVE_007', 422, 'Only pending leave requests can be cancelled.');
 
     await AuditLog.create({
       performedBy: new mongoose.Types.ObjectId(employeeId),
@@ -319,6 +346,15 @@ export class LeaveService {
     const mongoSession = await mongoose.startSession();
     try {
       await mongoSession.withTransaction(async () => {
+        // Atomic state claim (pending → approved): concurrent duplicate
+        // requests cannot both apply balance/attendance changes.
+        const claimed = await Leave.findOneAndUpdate(
+          { _id: leave._id, status: 'pending' },
+          { $set: { status: 'approved', reviewedBy: new mongoose.Types.ObjectId(adminId), reviewedAt: now } },
+          { session: mongoSession, new: true },
+        );
+        if (!claimed) throw new AppError('LVE_005', 422, 'Only pending leave requests can be approved.');
+
         // Atomic balance deduction — $gte prevents underflow (BR-LVE-13)
         if (leaveType !== 'lwp') {
           const balancePath = `leaveBalances.${leaveType}`;
@@ -368,6 +404,8 @@ export class LeaveService {
                 leaveType,
                 leaveDuration:      duration,
                 leaveHalfDayPeriod: leave.halfDayPeriod,
+                // Approved leave resolves a 24-hour missed check-out on this day.
+                hasUnresolvedMissedCheckout: false,
               },
               $setOnInsert: {
                 date:           new Date(dateStr + 'T00:00:00Z'),
@@ -427,7 +465,7 @@ export class LeaveService {
       referenceId:   leave._id,
       emailAddress:  user?.email,
       emailName:     user ? `${user.firstName} ${user.lastName}` : undefined,
-    });
+    }).catch(logNotificationFailure);
 
     return {
       id:          leave._id.toHexString(),
@@ -449,11 +487,19 @@ export class LeaveService {
     if (leave.status !== 'pending') throw new AppError('LVE_005', 422, 'Only pending leave requests can be rejected.');
 
     const now = new Date();
-    leave.status       = 'rejected';
-    leave.reviewedBy   = new mongoose.Types.ObjectId(adminId);
-    leave.reviewedAt   = now;
-    if (reason) leave.reviewRemarks = reason;
-    await leave.save();
+    const rejected = await Leave.findOneAndUpdate(
+      { _id: leave._id, status: 'pending' },
+      {
+        $set: {
+          status:     'rejected',
+          reviewedBy: new mongoose.Types.ObjectId(adminId),
+          reviewedAt: now,
+          ...(reason ? { reviewRemarks: reason } : {}),
+        },
+      },
+      { new: true },
+    );
+    if (!rejected) throw new AppError('LVE_005', 422, 'Only pending leave requests can be rejected.');
 
     await AuditLog.create({
       performedBy: new mongoose.Types.ObjectId(adminId),
@@ -473,7 +519,7 @@ export class LeaveService {
         referenceId:   leave._id,
         emailAddress:  rejectedUser?.email,
         emailName:     rejectedUser ? `${rejectedUser.firstName} ${rejectedUser.lastName}` : undefined,
-      });
+      }).catch(logNotificationFailure);
     })();
 
     return { id: leave._id.toHexString(), status: 'rejected' };
@@ -525,6 +571,15 @@ export class LeaveService {
     const mongoSession = await mongoose.startSession();
     try {
       await mongoSession.withTransaction(async () => {
+        // Atomic state claim (approved → revoked): concurrent duplicate
+        // requests cannot both apply balance/attendance changes.
+        const claimed = await Leave.findOneAndUpdate(
+          { _id: leave._id, status: 'approved' },
+          { $set: { status: 'revoked' } },
+          { session: mongoSession, new: true },
+        );
+        if (!claimed) throw new AppError('LVE_006', 422, 'Only approved leave requests can be revoked.');
+
         if (leaveType !== 'lwp') {
           // Restore balance to currentYear (BR-LVE-21)
           await User.findByIdAndUpdate(
@@ -552,15 +607,20 @@ export class LeaveService {
         for (const dateStr of affectedDates) {
           const day = await AttendanceDay.findOne({ employeeId, dateString: dateStr }).session(mongoSession).lean();
           if (!day) continue;
-          const priorStatus = (day.totalMinutes ?? 0) >= (settings.requiredDailyMinutes ?? 540)
-            ? 'present'
-            : (day.totalMinutes ?? 0) >= (settings.halfDayThresholdMinutes ?? 270)
-              ? 'half-day'
-              : 'absent';
+          // A day whose missed check-out was resolved only by this leave goes
+          // back to absent + unresolved (docs/85); otherwise derive from minutes.
+          const missedUnresolvedAgain = !!day.missedCheckoutSessionId && !day.isRegularized;
+          const priorStatus = missedUnresolvedAgain
+            ? 'absent'
+            : (day.totalMinutes ?? 0) >= (settings.requiredDailyMinutes ?? 540)
+              ? 'present'
+              : (day.totalMinutes ?? 0) >= (settings.halfDayThresholdMinutes ?? 270)
+                ? 'half-day'
+                : 'absent';
           await AttendanceDay.updateOne(
             { _id: day._id },
             {
-              $set:   { status: priorStatus },
+              $set:   { status: priorStatus, ...(missedUnresolvedAgain ? { hasUnresolvedMissedCheckout: true } : {}) },
               $unset: { leaveRequestId: '', leaveType: '', leaveDuration: '' },
             },
             { session: mongoSession },
@@ -601,7 +661,7 @@ export class LeaveService {
       referenceId:   leave._id,
       emailAddress:  user?.email,
       emailName:     user ? `${user.firstName} ${user.lastName}` : undefined,
-    });
+    }).catch(logNotificationFailure);
 
     return {
       id:          leave._id.toHexString(),
@@ -654,6 +714,15 @@ export class LeaveService {
     const mongoSession = await mongoose.startSession();
     try {
       await mongoSession.withTransaction(async () => {
+        // Atomic state claim (approved → withdrawn): concurrent duplicate
+        // requests cannot both apply balance/attendance changes.
+        const claimed = await Leave.findOneAndUpdate(
+          { _id: leave._id, status: 'approved' },
+          { $set: { status: 'withdrawn' } },
+          { session: mongoSession, new: true },
+        );
+        if (!claimed) throw new AppError('LVE_008', 422, 'Only approved leave requests can be withdrawn.');
+
         if (leaveType !== 'lwp') {
           await User.findByIdAndUpdate(
             employeeId,
@@ -680,15 +749,20 @@ export class LeaveService {
         for (const dateStr of affectedDates) {
           const day = await AttendanceDay.findOne({ employeeId, dateString: dateStr }).session(mongoSession).lean();
           if (!day) continue;
-          const priorStatus = (day.totalMinutes ?? 0) >= (settings.requiredDailyMinutes ?? 540)
-            ? 'present'
-            : (day.totalMinutes ?? 0) >= (settings.halfDayThresholdMinutes ?? 270)
-              ? 'half-day'
-              : 'absent';
+          // A day whose missed check-out was resolved only by this leave goes
+          // back to absent + unresolved (docs/85); otherwise derive from minutes.
+          const missedUnresolvedAgain = !!day.missedCheckoutSessionId && !day.isRegularized;
+          const priorStatus = missedUnresolvedAgain
+            ? 'absent'
+            : (day.totalMinutes ?? 0) >= (settings.requiredDailyMinutes ?? 540)
+              ? 'present'
+              : (day.totalMinutes ?? 0) >= (settings.halfDayThresholdMinutes ?? 270)
+                ? 'half-day'
+                : 'absent';
           await AttendanceDay.updateOne(
             { _id: day._id },
             {
-              $set:   { status: priorStatus },
+              $set:   { status: priorStatus, ...(missedUnresolvedAgain ? { hasUnresolvedMissedCheckout: true } : {}) },
               $unset: { leaveRequestId: '', leaveType: '', leaveDuration: '', leaveHalfDayPeriod: '' },
             },
             { session: mongoSession },
@@ -731,7 +805,7 @@ export class LeaveService {
   static async getBalance(actorId: string, role: UserRole, employeeId?: string) {
     await connectDB();
 
-    const targetId = (role === 'admin' && employeeId) ? employeeId : actorId;
+    const targetId = (isAttendanceAdmin(role) && employeeId) ? employeeId : actorId;
     const user = await User.findById(targetId).lean() as IUser | null;
     if (!user) throw new AppError('GEN_002', 404, 'Employee not found.');
 

@@ -618,6 +618,9 @@ if (hasCookie && !hasBearer && origin && origin !== appUrl) {
 
 `JWT_SECRET_PREVIOUS` holds the prior secret during a rotation window. Verification tries current secret first, falls back to previous — zero user disruption.
 
+> **Correction (2026-11-08, docs/84):** `JWT_SECRET_PREVIOUS` is honoured only while `JWT_SECRET_PREVIOUS_EXPIRES_AT` is set to a time at most 24 hours ahead, never for expired tokens, and **must never contain a compromised key**. The 7-day window described in this document no longer applies.
+
+
 ```typescript
 // lib/utils/jwt.ts
 const CURRENT  = new TextEncoder().encode(process.env.JWT_SECRET!);

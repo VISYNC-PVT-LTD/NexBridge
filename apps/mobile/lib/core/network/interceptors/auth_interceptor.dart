@@ -6,6 +6,13 @@ import '../../storage/secure_storage.dart';
 
 typedef SessionExpiredCallback = void Function();
 
+/// True only when the server definitively rejected the refresh token
+/// (401 invalid/revoked/expired session, 403 deactivated). Rate limiting
+/// (429), server errors (5xx) and network failures (null status) are
+/// temporary and must NOT destroy a valid session.
+bool isDefinitiveRefreshRejection(int? statusCode) =>
+    statusCode == 401 || statusCode == 403;
+
 class AuthInterceptor extends Interceptor {
   final Dio _dio;
   SessionExpiredCallback? onSessionExpired;
@@ -51,9 +58,9 @@ class AuthInterceptor extends Interceptor {
       return;
     }
 
-    // Avoid refresh loop on refresh endpoint itself
+    // Avoid refresh loop on refresh endpoint itself. The refresh call below
+    // handles its own failures (see isDefinitiveRefreshRejection).
     if (err.requestOptions.path.endsWith(ApiEndpoints.refresh)) {
-      onSessionExpired?.call();
       handler.next(err);
       return;
     }
@@ -100,10 +107,19 @@ class AuthInterceptor extends Interceptor {
       );
       _refreshCompleter!.complete(newAccessToken);
       handler.resolve(await _retry(err.requestOptions, newAccessToken));
-    } catch (_) {
+    } on DioException catch (refreshErr) {
       _refreshCompleter!.complete(null);
-      await SecureStorageService.clearSession();
-      onSessionExpired?.call();
+      // Only a definitive auth rejection of the refresh token ends the session.
+      // 429 (rate limited), 5xx and network/timeouts are TEMPORARY: keep the
+      // stored tokens so the next request can retry the refresh.
+      if (isDefinitiveRefreshRejection(refreshErr.response?.statusCode)) {
+        await SecureStorageService.clearSession();
+        onSessionExpired?.call();
+      }
+      handler.next(err);
+    } catch (_) {
+      // Unexpected (e.g. malformed response body) — treat as temporary.
+      _refreshCompleter!.complete(null);
       handler.next(err);
     } finally {
       _refreshCompleter = null;

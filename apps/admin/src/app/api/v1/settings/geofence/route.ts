@@ -4,7 +4,7 @@ import { UpdateGeofenceSchema } from '@validators/settings';
 import { SettingsService } from '@services/SettingsService';
 import { AppError } from '@services/AuthService';
 import { getAuthUser, AuthError } from '@mw/requireAuth';
-import { assertRole } from '@mw/requireRole';
+import { assertAttendanceAdmin } from '@mw/requireRole';
 import { apiError, success } from '@lib/utils/api-response';
 
 export const dynamic = 'force-dynamic';
@@ -12,7 +12,7 @@ export const dynamic = 'force-dynamic';
 export async function GET(request: NextRequest): Promise<NextResponse> {
   try {
     const p = await getAuthUser(request);
-    assertRole(p, 'admin');
+    assertAttendanceAdmin(p);
   } catch (err) {
     if (err instanceof AuthError) return apiError(err.code, 'Unauthorized.', err.httpStatus);
     if (err instanceof AppError) return apiError(err.code, err.message, err.httpStatus);
@@ -31,7 +31,7 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
 export async function PATCH(request: NextRequest): Promise<NextResponse> {
   try {
     const p = await getAuthUser(request);
-    assertRole(p, 'admin');
+    assertAttendanceAdmin(p);
   } catch (err) {
     if (err instanceof AuthError) return apiError(err.code, 'Unauthorized.', err.httpStatus);
     if (err instanceof AppError) return apiError(err.code, err.message, err.httpStatus);

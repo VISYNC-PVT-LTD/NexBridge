@@ -105,7 +105,12 @@ class AuthRepository {
   Future<User> getMe() => _source.getMe();
 
   Future<String> changePassword(String currentPassword, String newPassword) async {
-    final result = await _source.changePassword(currentPassword: currentPassword, newPassword: newPassword);
+    final sessionId = await SecureStorageService.read(StorageKeys.sessionId);
+    final result = await _source.changePassword(
+      currentPassword: currentPassword,
+      newPassword: newPassword,
+      sessionId: sessionId,
+    );
     final data = result['data'] as Map<String, dynamic>?;
     final newToken = data?['accessToken'] as String?;
     if (newToken != null) {

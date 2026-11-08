@@ -1,5 +1,6 @@
 import bcrypt from 'bcryptjs';
 import type { UserRole } from '@app-types/enums';
+import { isAttendanceAdmin } from '@mw/requireRole';
 import { randomBytes, createHash } from 'crypto';
 import mongoose from 'mongoose';
 import { connectDB } from '@lib/db/connect';
@@ -13,7 +14,7 @@ import { AuditLog } from '@models/AuditLog';
 import { CompanySettings } from '@models/CompanySettings';
 import { PasswordResetToken } from '@models/PasswordResetToken';
 import { AppError } from '@services/AuthService';
-import { NotificationService } from '@services/NotificationService';
+import { NotificationService, logNotificationFailure } from '@services/NotificationService';
 import { getAppUrl } from '@lib/utils/app-url';
 import type { ILeaveBalances } from '@models/User';
 
@@ -179,7 +180,7 @@ export class EmployeeService {
     },
     requesterRole: UserRole,
   ) {
-    if (requesterRole !== 'admin') throw new AppError('AUTH_006', 403, 'Forbidden.');
+    if (!isAttendanceAdmin(requesterRole)) throw new AppError('AUTH_006', 403, 'Forbidden.');
 
     await connectDB();
 
@@ -376,7 +377,7 @@ export class EmployeeService {
   }
 
   static async getById(id: string, requesterRole: UserRole) {
-    if (requesterRole !== 'admin') throw new AppError('AUTH_006', 403, 'Forbidden.');
+    if (!isAttendanceAdmin(requesterRole)) throw new AppError('AUTH_006', 403, 'Forbidden.');
     assertValidObjectId(id);
     await connectDB();
 
@@ -555,7 +556,7 @@ export class EmployeeService {
       body:         'Your account has been activated. You can now log in.',
       emailAddress: user.email,
       emailName:    `${user.firstName} ${user.lastName}`,
-    });
+    }).catch(logNotificationFailure);
 
     return { message: 'Employee activated. They must log in fresh on each device.' };
   }
@@ -600,7 +601,7 @@ export class EmployeeService {
       body:         `Your account has been deactivated.${reason ? ` Reason: ${reason}` : ''}`,
       emailAddress: user.email,
       emailName:    `${user.firstName} ${user.lastName}`,
-    });
+    }).catch(logNotificationFailure);
 
     return { message: 'Employee deactivated. All sessions revoked.' };
   }

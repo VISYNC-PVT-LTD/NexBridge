@@ -9,7 +9,7 @@ import { toast } from 'sonner';
 import { Button } from '@components/ui/button';
 import { Input } from '@components/ui/input';
 import { useAuth } from '@/contexts/AuthContext';
-import { apiFetch } from '@lib/utils/api-client';
+import { apiFetch, getSessionId, setAccessToken } from '@lib/utils/api-client';
 
 const schema = z.object({
   currentPassword: z.string().min(1, 'Current password required'),
@@ -34,16 +34,35 @@ export default function ChangePasswordPage() {
   const onSubmit = async (data: Form) => {
     setSubmitting(true);
     try {
-      await apiFetch('/api/v1/auth/me/change-password', {
+      const sessionId = getSessionId();
+      // apiFetch resolves with the error body on 4xx — it does not throw.
+      const res = await apiFetch<{
+        success: boolean;
+        data?: { accessToken?: string };
+        error?: { code?: string };
+      }>('/api/v1/auth/me/change-password', {
         method: 'PATCH',
-        body: JSON.stringify({ currentPassword: data.currentPassword, newPassword: data.newPassword }),
+        body: JSON.stringify({
+          currentPassword: data.currentPassword,
+          newPassword: data.newPassword,
+          ...(sessionId ? { sessionId } : {}),
+        }),
       });
+      if (!res?.success) {
+        const code = res?.error?.code ?? '';
+        toast.error(
+          code === 'AUTH_001' ? 'Current password is incorrect.'
+            : code === 'GEN_003' ? 'Too many attempts. Please wait and try again.'
+            : 'Failed to update password.',
+        );
+        return;
+      }
+      if (res.data?.accessToken) setAccessToken(res.data.accessToken);
       await refreshUser();
       toast.success('Password updated successfully');
       router.replace('/dashboard');
-    } catch (err: unknown) {
-      const code = (err as { code?: string }).code ?? '';
-      toast.error(code === 'AUTH_001' ? 'Current password is incorrect.' : 'Failed to update password.');
+    } catch {
+      toast.error('Failed to update password.');
     } finally {
       setSubmitting(false);
     }

@@ -11,6 +11,9 @@ import { AttendanceDay } from '@models/AttendanceDay';
 import { Holiday } from '@models/Holiday';
 import { PayrollRecord } from '@models/PayrollRecord';
 import { AuditLog } from '@models/AuditLog';
+import { PayrollLock } from '@models/PayrollLock';
+import { NotificationService } from '@services/NotificationService';
+import { AttendanceSession } from '@models/AttendanceSession';
 
 // ─── Fixtures ─────────────────────────────────────────────────────────────────
 
@@ -94,6 +97,11 @@ const mockSession = {
 };
 
 beforeEach(() => {
+  // 24-hour rule: services reconcile overdue sessions first; default = none overdue.
+  jest.spyOn(AttendanceSession, 'find').mockReturnValue({ select: jest.fn().mockReturnThis(), sort: jest.fn().mockReturnThis(), lean: jest.fn().mockResolvedValue([]) } as never);
+  // Notification fan-out is fire-and-forget; covered by NotificationService tests.
+  jest.spyOn(NotificationService, 'create').mockResolvedValue(undefined as never);
+  jest.spyOn(NotificationService, 'notifyAllAdmins').mockResolvedValue(undefined as never);
   jest.clearAllMocks();
   jest.spyOn(mongoose, 'startSession').mockResolvedValue(mockSession as unknown as mongoose.ClientSession);
   jest.spyOn(AuditLog, 'create').mockResolvedValue(undefined as never);
@@ -106,6 +114,39 @@ beforeEach(() => {
   jest.spyOn(AttendanceDay, 'find').mockReturnValue({
     lean: jest.fn().mockResolvedValue([]),
   } as never);
+  // Current contract: compute/finalise/unfinalise/adjust call
+  // PayrollLockService.assertUnlocked(). Default: month not locked.
+  jest.spyOn(PayrollLock, 'findOne').mockReturnValue({
+    lean: jest.fn().mockResolvedValue(null),
+  } as never);
+});
+
+// ─── Locked period ────────────────────────────────────────────────────────────
+
+describe('U-PAY-LOCK: locked payroll month blocks every mutation', () => {
+  beforeEach(() => {
+    jest.spyOn(PayrollLock, 'findOne').mockReturnValue({
+      lean: jest.fn().mockResolvedValue({ yearMonth: YEAR_MONTH, lockedAt: new Date() }),
+    } as never);
+  });
+
+  it('compute rejects with PAY_006', async () => {
+    await expect(PayrollService.compute({
+      yearMonth: YEAR_MONTH, employeeId: EMP_OID.toHexString(), actorId: ADMIN_OID.toHexString(),
+    })).rejects.toMatchObject({ code: 'PAY_006', httpStatus: 409 });
+  });
+
+  it('finalise rejects with PAY_006', async () => {
+    await expect(PayrollService.finalise({
+      yearMonth: YEAR_MONTH, employeeId: EMP_OID.toHexString(), adminId: ADMIN_OID.toHexString(),
+    })).rejects.toMatchObject({ code: 'PAY_006' });
+  });
+
+  it('unfinalise rejects with PAY_006', async () => {
+    await expect(PayrollService.unfinalise({
+      yearMonth: YEAR_MONTH, employeeId: EMP_OID.toHexString(), adminId: ADMIN_OID.toHexString(), reason: 'x',
+    })).rejects.toMatchObject({ code: 'PAY_006' });
+  });
 });
 
 // ─── U-PAY-01 ─────────────────────────────────────────────────────────────────
@@ -308,5 +349,33 @@ describe('U-PAY-08: recompute after unfinalise reflects current attendance data'
       expect.objectContaining({ $unset: { finalisedAt: 1 } }),
       expect.anything(),
     );
+  });
+});
+
+// ─── Employee self-service visibility ─────────────────────────────────────────
+
+describe('U-PAY-ME: employees never see draft payroll', () => {
+  const USER_OID = new mongoose.Types.ObjectId();
+  beforeEach(() => {
+    jest.spyOn(Employee, 'findOne').mockReturnValue({
+      lean: jest.fn().mockResolvedValue({ ...makeEmployee(), userId: USER_OID, joiningDate: new Date('2025-01-01') }),
+    } as never);
+  });
+
+  it('list filter requires status finalised', async () => {
+    const find = jest.spyOn(PayrollRecord, 'find').mockReturnValue({
+      sort: jest.fn().mockReturnThis(), skip: jest.fn().mockReturnThis(), limit: jest.fn().mockReturnThis(),
+      lean: jest.fn().mockResolvedValue([]),
+    } as never);
+    jest.spyOn(PayrollRecord, 'countDocuments').mockResolvedValue(0 as never);
+    await PayrollService.listForEmployee({ userId: USER_OID.toHexString(), query: { page: 1, limit: 12 } as never });
+    expect(find.mock.calls[0][0]).toMatchObject({ status: 'finalised' });
+  });
+
+  it('single-month lookup of a draft returns PAY_002 (not found)', async () => {
+    const findOne = jest.spyOn(PayrollRecord, 'findOne').mockReturnValue({ lean: jest.fn().mockResolvedValue(null) } as never);
+    await expect(PayrollService.getOwnByYearMonth({ userId: USER_OID.toHexString(), yearMonth: YEAR_MONTH }))
+      .rejects.toMatchObject({ code: 'PAY_002' });
+    expect(findOne.mock.calls[0][0]).toMatchObject({ status: 'finalised' });
   });
 });

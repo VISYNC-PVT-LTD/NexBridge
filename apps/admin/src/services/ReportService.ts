@@ -7,6 +7,7 @@ import { User } from '@models/User';
 import { AuditLog } from '@models/AuditLog';
 import { AppError } from '@services/AuthService';
 import { Regularization } from '@models/Regularization';
+import { reconcileMissedCheckouts } from '@services/AttendanceService';
 import type {
   AttendanceReportQuery,
   AttendanceExportQuery,
@@ -137,6 +138,7 @@ export class ReportService {
 
   static async attendanceReport(userId: string, query: AttendanceReportQuery) {
     await connectDB();
+    await reconcileMissedCheckouts(); // 24-hour rule before reporting (docs/85)
 
     if (daysBetween(query.startDate, query.endDate) > 90) {
       throw new AppError('REP_001', 400, 'Date range exceeds 90-day limit for paginated view.');
@@ -197,6 +199,7 @@ export class ReportService {
 
   static async attendanceExport(userId: string, query: AttendanceExportQuery): Promise<Buffer> {
     await connectDB();
+    await reconcileMissedCheckouts(); // 24-hour rule before reporting (docs/85)
 
     if (daysBetween(query.startDate, query.endDate) > 366) {
       throw new AppError('REP_002', 400, 'Date range exceeds 366-day limit for export.');
@@ -489,6 +492,7 @@ export class ReportService {
 
   static async employeeSummary(userId: string, query: EmployeeSummaryQuery) {
     await connectDB();
+    await reconcileMissedCheckouts(); // 24-hour rule before reporting (docs/85)
 
     const userFilter: Record<string, unknown> = { role: 'employee' };
     if (query.employeeId) userFilter._id        = new mongoose.Types.ObjectId(query.employeeId);
@@ -587,6 +591,7 @@ export class ReportService {
 
   static async departmentSummary(userId: string, query: DepartmentSummaryQuery) {
     await connectDB();
+    await reconcileMissedCheckouts(); // 24-hour rule before reporting (docs/85)
 
     type DeptUser = { _id: mongoose.Types.ObjectId; department?: string; isActive: boolean };
     const users = (await User.find({ role: 'employee' }, 'department isActive').lean()) as DeptUser[];
@@ -653,6 +658,7 @@ export class ReportService {
 
   static async employeeSummaryExport(userId: string, query: EmployeeSummaryQuery): Promise<Buffer> {
     await connectDB();
+    await reconcileMissedCheckouts(); // 24-hour rule before reporting (docs/85)
 
     const userFilter: Record<string, unknown> = { role: 'employee' };
     if (query.employeeId) userFilter._id        = new mongoose.Types.ObjectId(query.employeeId);
@@ -746,6 +752,7 @@ export class ReportService {
 
   static async departmentSummaryExport(userId: string, query: DepartmentSummaryQuery): Promise<Buffer> {
     await connectDB();
+    await reconcileMissedCheckouts(); // 24-hour rule before reporting (docs/85)
 
     type DeptUser = { _id: mongoose.Types.ObjectId; department?: string; isActive: boolean };
     const users = (await User.find({ role: 'employee' }, 'department isActive').lean()) as DeptUser[];
@@ -898,6 +905,7 @@ export class ReportService {
 
   static async dashboardSummary(userId: string) {
     await connectDB();
+    await reconcileMissedCheckouts(); // 24-hour rule before reporting (docs/85)
 
     const today      = new Date();
     const dateString = today.toISOString().slice(0, 10);

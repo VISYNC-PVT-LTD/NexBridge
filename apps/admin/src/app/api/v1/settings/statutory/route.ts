@@ -3,7 +3,7 @@ import { z, ZodError } from 'zod';
 import { SettingsService } from '@services/SettingsService';
 import { AppError } from '@services/AuthService';
 import { getAuthUser, AuthError } from '@mw/requireAuth';
-import { assertRole } from '@mw/requireRole';
+import { assertAttendanceAdmin } from '@mw/requireRole';
 import { apiError, success } from '@lib/utils/api-response';
 
 export const dynamic = 'force-dynamic';
@@ -40,7 +40,7 @@ const StatutoryBodySchema = z.object({
 
 async function getAdmin(request: NextRequest) {
   const payload = await getAuthUser(request);
-  assertRole(payload, 'admin');
+  assertAttendanceAdmin(payload);
   return payload;
 }
 

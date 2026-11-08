@@ -5,6 +5,7 @@ import { PayrollRecord } from '@models/PayrollRecord';
 import { User }          from '@models/User';
 import { AuditLog }      from '@models/AuditLog';
 import { ReportService } from '@services/ReportService';
+import { AttendanceSession } from '@models/AttendanceSession';
 
 jest.mock('@lib/db/connect', () => ({ connectDB: jest.fn() }));
 const mockAddRow = jest.fn();
@@ -29,6 +30,8 @@ const EMP_OID2 = new mongoose.Types.ObjectId();
 
 beforeEach(() => {
   jest.clearAllMocks();
+  // 24-hour rule: services reconcile overdue sessions first; default = none overdue.
+  jest.spyOn(AttendanceSession, 'find').mockReturnValue({ select: jest.fn().mockReturnThis(), sort: jest.fn().mockReturnThis(), lean: jest.fn().mockResolvedValue([]) } as never);
   jest.spyOn(AuditLog, 'create').mockResolvedValue({} as never);
 });
 

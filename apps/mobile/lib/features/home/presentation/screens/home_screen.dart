@@ -1,4 +1,5 @@
 import 'dart:async';
+import '../../../attendance/domain/session_timer.dart';
 import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -156,7 +157,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
           _showGpsSheet(_GpsError.outsideGeofence);
           return;
         }
-        if (code == 'ATT_004') {
+        // ATT_009 = not on the approved office network (ATT_004 means the
+        // request was a replay/duplicate and falls through to the server message).
+        if (code == 'ATT_009') {
           ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(
               content: Text('Check-in failed: you are not connected to the approved office network.'),
@@ -222,7 +225,32 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
           _showGpsSheet(_GpsError.outsideGeofence);
           return;
         }
-        if (code == 'ATT_004') {
+        // ATT_011 = the 24-hour check-out window has passed (missed check-out).
+        if (code == 'ATT_011') {
+          final msg = (e.response?.data as Map<String, dynamic>?)?['error']?['message'] as String?;
+          ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+            content: Text(msg ?? 'The 24-hour check-out window has passed. Please submit a regularization or leave request.'),
+            duration: const Duration(seconds: 6),
+          ));
+          await ref.read(attendanceProvider.notifier).reconcile();
+          return;
+        }
+                // ATT_010 = location is required to check out (GPS off/denied/unavailable).
+        if (code == 'ATT_010') {
+          final permission = await Geolocator.checkPermission();
+          if (!mounted) return;
+          if (permission == LocationPermission.denied || permission == LocationPermission.deniedForever) {
+            _showGpsSheet(_GpsError.permissionDenied);
+          } else {
+            _showGpsSheet(_GpsError.disabled);
+          }
+          return;
+        }
+        if (code == 'ATT_002') {
+          _showGpsSheet(_GpsError.lowAccuracy);
+          return;
+        }
+        if (code == 'ATT_009') {
           ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(
               content: Text('Check-out failed: you are not connected to the approved office network.'),
@@ -247,6 +275,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
     if (today?.currentSessionStart == null) return today?.totalMinutesToday ?? 0;
     final start = DateTime.tryParse(today!.currentSessionStart!)?.toLocal();
     if (start == null) return today.totalMinutesToday;
+    if (missedCheckoutDeadlinePassed(today.currentSessionDeadline, DateTime.now())) {
+      return today.totalMinutesToday; // 24-hour window over: no running time
+    }
     return today.totalMinutesToday + DateTime.now().difference(start).inMinutes;
   }
 
@@ -328,8 +359,11 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
                 error: (_, __) => const SizedBox.shrink(),
                 data: (today) => _AttendanceTimerWidget(
                   sessionStart: today?.currentSessionStart,
+                  deadline: today?.currentSessionDeadline,
                   isActive: checkInState == CheckInState.checkedIn,
-                  forgotCheckout: today?.forgotCheckout ?? false,
+                  // 24-hour deadline reached while the app is open: re-sync so
+                  // the server records the missed check-out and the UI resets.
+                  onDeadlineReached: () => ref.read(attendanceProvider.notifier).reconcile(),
                 ),
               ),
 
@@ -342,10 +376,11 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
                   return Padding(
                     padding: const EdgeInsets.only(bottom: 12),
                     child: _MissedCheckoutBanner(
+                      dateString: today.staleSession?.dateString,
                       onRegularise: () {
                         final stale = today.staleSession;
                         final dateStr = stale?.dateString ?? today.date;
-                        final ci = stale != null ? _isoToHHMM(stale.checkInTimestamp) : null;
+                        final ci = (stale != null && stale.checkInTimestamp.isNotEmpty) ? _isoToHHMM(stale.checkInTimestamp) : null;
                         final uri = '${RouteNames.regularizationCreate}?type=forgotCheckOut&date=$dateStr'
                             '${ci != null ? '&checkIn=$ci' : ''}';
                         context.push(uri);
@@ -415,10 +450,11 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
 // ─── Attendance timer widget ────────────────────────────────────────────────
 
 class _AttendanceTimerWidget extends StatefulWidget {
-  const _AttendanceTimerWidget({required this.sessionStart, required this.isActive, this.forgotCheckout = false});
+  const _AttendanceTimerWidget({required this.sessionStart, required this.isActive, this.deadline, this.onDeadlineReached});
   final String? sessionStart;
+  final String? deadline;
   final bool isActive;
-  final bool forgotCheckout;
+  final VoidCallback? onDeadlineReached;
 
   @override
   State<_AttendanceTimerWidget> createState() => _AttendanceTimerWidgetState();
@@ -426,20 +462,20 @@ class _AttendanceTimerWidget extends StatefulWidget {
 
 class _AttendanceTimerWidgetState extends State<_AttendanceTimerWidget> {
   Timer? _timer;
+  bool _deadlineNotified = false;
 
   @override
   void initState() {
     super.initState();
-    if (widget.isActive && !widget.forgotCheckout) _startTimer();
+    if (widget.isActive) _startTimer();
   }
 
   @override
   void didUpdateWidget(_AttendanceTimerWidget old) {
     super.didUpdateWidget(old);
-    final shouldRun = widget.isActive && !widget.forgotCheckout;
-    final wasRunning = old.isActive && !old.forgotCheckout;
-    if (shouldRun && !wasRunning) _startTimer();
-    if (!shouldRun && wasRunning) _stopTimer();
+    if (widget.sessionStart != old.sessionStart) _deadlineNotified = false;
+    if (widget.isActive && !old.isActive) _startTimer();
+    if (!widget.isActive && old.isActive) _stopTimer();
   }
 
   @override
@@ -450,7 +486,14 @@ class _AttendanceTimerWidgetState extends State<_AttendanceTimerWidget> {
 
   void _startTimer() {
     _timer?.cancel();
-    _timer = Timer.periodic(const Duration(seconds: 1), (_) => setState(() {}));
+    _timer = Timer.periodic(const Duration(seconds: 1), (_) {
+      if (!mounted) return;
+      if (!_deadlineNotified && missedCheckoutDeadlinePassed(widget.deadline, DateTime.now())) {
+        _deadlineNotified = true;
+        widget.onDeadlineReached?.call();
+      }
+      setState(() {});
+    });
   }
 
   void _stopTimer() {
@@ -458,40 +501,26 @@ class _AttendanceTimerWidgetState extends State<_AttendanceTimerWidget> {
     _timer = null;
   }
 
-  Duration _elapsed() {
-    if (widget.forgotCheckout) return const Duration(hours: 24);
-    if (widget.sessionStart == null) return Duration.zero;
-    final start = DateTime.tryParse(widget.sessionStart!)?.toLocal();
-    if (start == null) return Duration.zero;
-    final d = DateTime.now().difference(start);
-    return d.isNegative ? Duration.zero : d;
-  }
-
-  String _fmt(Duration d) {
-    final h = d.inHours.toString().padLeft(2, '0');
-    final m = (d.inMinutes % 60).toString().padLeft(2, '0');
-    final s = (d.inSeconds % 60).toString().padLeft(2, '0');
-    return '$h : $m : $s';
-  }
-
   @override
   Widget build(BuildContext context) {
-    final elapsed = _elapsed();
-    final active = widget.isActive && widget.sessionStart != null;
-    // Only flag as missed when the session is actually active (stale & running).
-    // When isCheckedIn=false (stale auto-resolved), the banner handles messaging.
-    final showMissed = widget.forgotCheckout && widget.isActive;
-    final timerColor = showMissed ? const Color(0xFFDC2626) : (active ? const Color(0xFF16A34A) : Colors.grey[300]);
+    final elapsed = sessionTimerElapsed(
+      sessionStart: widget.sessionStart,
+      deadline: widget.deadline,
+      isActive: widget.isActive,
+      now: DateTime.now(),
+    );
+    final running = widget.isActive && elapsed != Duration.zero;
+    final timerColor = running ? const Color(0xFF16A34A) : Colors.grey[300];
 
     return Column(
       children: [
         Text(
-          showMissed ? 'Missed check-out' : (active ? 'Current session' : 'Session time'),
-          style: TextStyle(fontSize: 12, color: showMissed ? const Color(0xFFDC2626) : Colors.grey[600]),
+          running ? 'Current session' : 'Session time',
+          style: TextStyle(fontSize: 12, color: Colors.grey[600]),
         ),
         const SizedBox(height: 6),
         Text(
-          active ? _fmt(elapsed) : '00 : 00 : 00',
+          formatSessionTimer(elapsed),
           style: TextStyle(
             fontSize: 38,
             fontWeight: FontWeight.bold,
@@ -527,22 +556,6 @@ class _StatusCard extends StatelessWidget {
         padding: const EdgeInsets.all(16),
         child: switch (checkInState) {
           CheckInState.reconciling => const Center(child: CircularProgressIndicator()),
-          CheckInState.checkedIn when forgotCheckout => Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(children: [
-                  const Icon(Icons.warning_amber_rounded, color: Color(0xFFDC2626), size: 18),
-                  const SizedBox(width: 8),
-                  const Text('Missed Check-Out', style: TextStyle(fontWeight: FontWeight.w600, color: Color(0xFFDC2626))),
-                ]),
-                if (today?.currentSessionStart != null) ...[
-                  const SizedBox(height: 4),
-                  Text('Checked in at ${_formatTime(today!.currentSessionStart!)} — no check-out recorded.', style: const TextStyle(color: Colors.grey)),
-                ],
-                const Divider(height: 16),
-                const Text('Please regularise to record your attendance.', style: TextStyle(fontSize: 13, color: Color(0xFFDC2626))),
-              ],
-            ),
           CheckInState.checkedIn => Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
@@ -672,8 +685,9 @@ class _StatusCard extends StatelessWidget {
 // ─── Missed checkout banner ───────────────────────────────────────────────────
 
 class _MissedCheckoutBanner extends StatelessWidget {
-  const _MissedCheckoutBanner({required this.onRegularise});
+  const _MissedCheckoutBanner({required this.onRegularise, this.dateString});
   final VoidCallback onRegularise;
+  final String? dateString;
 
   @override
   Widget build(BuildContext context) {
@@ -694,7 +708,11 @@ class _MissedCheckoutBanner extends StatelessWidget {
               children: [
                 const Text('Missed check-out', style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: Color(0xFF92400E))),
                 const SizedBox(height: 2),
-                const Text('A previous session had no check-out recorded.', style: TextStyle(fontSize: 12, color: Color(0xFF92400E))),
+                Text(
+                  'No check-out was recorded within 24 hours${dateString != null && dateString!.isNotEmpty ? ' for $dateString' : ''}. '
+                  'That day is marked absent until you submit a regularization (with your actual check-out time) or a leave request for that date.',
+                  style: const TextStyle(fontSize: 12, color: Color(0xFF92400E)),
+                ),
               ],
             ),
           ),
@@ -726,13 +744,6 @@ class _ActionButton extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    if (checkInState == CheckInState.checkedIn && forgotCheckout) {
-      return ElevatedButton(
-        style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFFDC2626)),
-        onPressed: onRegularise,
-        child: const Text('REGULARISE CHECK-OUT'),
-      );
-    }
     return switch (checkInState) {
       CheckInState.gpsRequesting || CheckInState.gpsAcquiring || CheckInState.submitting =>
         ElevatedButton(onPressed: null, child: Row(mainAxisAlignment: MainAxisAlignment.center, children: [const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white)), const SizedBox(width: 10), Text(checkInState == CheckInState.submitting ? 'CHECKING IN…' : 'GETTING LOCATION…')])),

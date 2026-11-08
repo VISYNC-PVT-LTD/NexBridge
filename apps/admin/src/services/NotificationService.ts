@@ -57,6 +57,19 @@ export interface CreateNotificationParams {
   emailName?: string;
 }
 
+// ─── Fire-and-forget safety ──────────────────────────────────────────────────
+
+/**
+ * Rejection handler for fire-and-forget notification dispatch
+ * (`void NotificationService.create(...).catch(logNotificationFailure)`).
+ * Without it a DB/push failure becomes an unhandled promise rejection, which
+ * can terminate the Node process. Logs only the error class — never the
+ * notification body, recipient or email address.
+ */
+export function logNotificationFailure(err: unknown): void {
+  console.error('[notification] dispatch failed:', err instanceof Error ? err.name : 'unknown error');
+}
+
 // ─── Service ─────────────────────────────────────────────────────────────────
 
 export class NotificationService {

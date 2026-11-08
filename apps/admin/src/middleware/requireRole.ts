@@ -8,6 +8,17 @@ export function assertRole(payload: JwtPayload, ...roles: UserRole[]): void {
   }
 }
 
+/**
+ * HR / attendance administrators (ATTENDANCE_ADMIN_ROLES): admin + super_admin.
+ * Every other role — employee, manager, executive — may access only their OWN
+ * attendance, leave, regularization and payroll records. No documented policy
+ * grants managers/executives visibility of other employees' HR data; the
+ * proxy page map already restricts HR pages to these two roles.
+ */
+export function isAttendanceAdmin(role: UserRole | string | undefined): boolean {
+  return role === 'admin' || role === 'super_admin';
+}
+
 // Attendance/HR admin roles (backward compatible with existing assertRole('admin') calls)
 export function assertAttendanceAdmin(payload: JwtPayload): void {
   assertRole(payload, 'admin', 'super_admin');

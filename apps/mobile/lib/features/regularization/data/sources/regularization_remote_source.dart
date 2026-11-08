@@ -28,7 +28,8 @@ class RegularizationRemoteSource {
     return RegularizationRequest.fromJson((r.data as Map<String, dynamic>)['data'] as Map<String, dynamic>);
   }
 
+  /// Withdraws the caller's own PENDING request (server: PATCH .../withdraw).
   Future<void> cancel(String id) async {
-    await _dio.patch(ApiEndpoints.regularizationCancel(id));
+    await _dio.patch(ApiEndpoints.regularizationWithdraw(id));
   }
 }

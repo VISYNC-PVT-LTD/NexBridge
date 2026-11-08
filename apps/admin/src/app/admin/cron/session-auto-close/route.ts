@@ -18,43 +18,37 @@ export async function POST(request: NextRequest) {
 
   const settings = await CompanySettings.findById('company-settings').lean() as ICompanySettings | null;
   const timezone = settings?.timezone ?? 'Asia/Kolkata';
+  const now = new Date();
+  const dateString = formatInTimeZone(now, timezone, 'yyyy-MM-dd');
 
-  // Close sessions for yesterday (previous calendar day in company timezone)
-  const yesterday = new Date(Date.now() - 86_400_000);
-  const dateString = formatInTimeZone(yesterday, timezone, 'yyyy-MM-dd');
+  // 24-hour missed-check-out sweep (docs/85). Unlike the previous per-date job
+  // this is NOT skipped when it already ran today: it is idempotent, so a late,
+  // repeated or concurrent run is harmless and catches anything that became
+  // overdue since the last run. Request paths also reconcile, so a delayed
+  // cron never delays what users see.
+  const { expired } = await AttendanceService.reconcileMissedCheckouts(now);
 
-  // Idempotency guard — skip if already completed for this date
-  const existing = await SystemEvent.findOne({
-    eventType: CRON_NAMES.SESSION_AUTO_CLOSE,
-    date: dateString,
-    status: 'completed',
-  }).lean();
-
-  if (existing) {
-    return NextResponse.json({
-      success: true,
-      jobName: CRON_NAMES.SESSION_AUTO_CLOSE,
-      skipped: true,
-      reason: 'already-completed',
-      dateString,
-    });
-  }
-
-  const { closed } = await AttendanceService.autoCloseSessions(dateString);
-
-  await SystemEvent.create({
-    eventType: CRON_NAMES.SESSION_AUTO_CLOSE,
-    date: dateString,
-    status: 'completed',
-    completedAt: new Date(),
-    meta: { sessionsClosed: closed },
-  });
+  // Record the run (upsert — the eventType+date index is unique).
+  await SystemEvent.updateOne(
+    { eventType: CRON_NAMES.SESSION_AUTO_CLOSE, date: dateString },
+    {
+      $set: { status: 'completed', completedAt: now },
+      $inc: { 'meta.runs': 1, 'meta.sessionsExpired': expired },
+    },
+    { upsert: true },
+  );
 
   return NextResponse.json({
     success: true,
     jobName: CRON_NAMES.SESSION_AUTO_CLOSE,
-    triggeredAt: new Date().toISOString(),
+    triggeredAt: now.toISOString(),
     dateString,
-    sessionsClosed: closed,
+    sessionsExpired: expired,
   });
 }
+
+// Vercel Cron invokes the configured path with an HTTP GET carrying
+// `Authorization: Bearer <CRON_SECRET>` (Vercel docs: Managing Cron Jobs).
+// POST is kept for manual/admin triggering. Both run the same authenticated,
+// idempotent handler.
+export const GET = POST;

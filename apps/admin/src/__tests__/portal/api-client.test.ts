@@ -118,6 +118,8 @@ describe('apiFetch', () => {
     const expired = jest.fn();
     registerSessionExpiredHandler(expired);
     setAccessToken('tok');
+    // Session expiry handling only applies when an authenticated session exists.
+    setSessionCredentials('refresh-tok', 'session-id');
     (global.fetch as jest.Mock)
       .mockResolvedValueOnce({
         ok: false, status: 401,
@@ -125,8 +127,23 @@ describe('apiFetch', () => {
       })
       .mockResolvedValueOnce({ ok: false, status: 401, json: () => Promise.resolve({}) });
 
-    await expect(apiFetch('/api/v1/test')).rejects.toBeDefined();
+    await expect(apiFetch('/api/v1/test')).rejects.toThrow('SESSION_EXPIRED');
     expect(expired).toHaveBeenCalled();
+  });
+
+  it('returns the 401 body (no expiry handler) when there is no session, e.g. wrong login password', async () => {
+    const expired = jest.fn();
+    registerSessionExpiredHandler(expired);
+    (global.fetch as jest.Mock).mockResolvedValueOnce({
+      ok: false, status: 401,
+      json: () => Promise.resolve({ success: false, error: { code: 'AUTH_001', message: 'x' } }),
+    });
+
+    await expect(apiFetch('/api/v1/auth/login')).resolves.toEqual({
+      success: false, error: { code: 'AUTH_001', message: 'x' },
+    });
+    expect(expired).not.toHaveBeenCalled();
+    expect(global.fetch).toHaveBeenCalledTimes(1);
   });
 });
 

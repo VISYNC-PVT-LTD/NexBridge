@@ -3,8 +3,9 @@ import { z, ZodError } from 'zod';
 import { SettingsService } from '@services/SettingsService';
 import { AppError } from '@services/AuthService';
 import { getAuthUser, AuthError } from '@mw/requireAuth';
-import { assertRole } from '@mw/requireRole';
+import { assertAttendanceAdmin } from '@mw/requireRole';
 import { apiError, success } from '@lib/utils/api-response';
+import { TIME_REGEX, timezoneSchema } from '@validators/settings';
 
 export const dynamic = 'force-dynamic';
 
@@ -14,12 +15,12 @@ const PatchBodySchema = z.object({
   company: z.object({
     name:     z.string().min(1).optional(),
     address:  z.string().optional(),
-    timezone: z.string().min(1).optional(),
+    timezone: timezoneSchema.optional(),
     currency: z.string().length(3).optional(),
   }).optional(),
   shift: z.object({
-    startTime:          z.string().regex(/^\d{2}:\d{2}$/).optional(),
-    endTime:            z.string().regex(/^\d{2}:\d{2}$/).optional(),
+    startTime:          z.string().regex(TIME_REGEX).optional(),
+    endTime:            z.string().regex(TIME_REGEX).optional(),
     gracePeriodMinutes: z.number().int().min(0).max(120).optional(),
   }).optional(),
   geofence: z.object({
@@ -69,7 +70,7 @@ function toShape(s: Awaited<ReturnType<typeof SettingsService.getSettings>>) {
 
 async function getAdmin(request: NextRequest) {
   const payload = await getAuthUser(request);
-  assertRole(payload, 'admin');
+  assertAttendanceAdmin(payload);
   return payload;
 }
 

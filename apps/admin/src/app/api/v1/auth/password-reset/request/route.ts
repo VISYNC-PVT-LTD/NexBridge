@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { ZodError } from 'zod';
 import { ForgotPasswordSchema } from '@validators/auth';
 import { AuthService } from '@services/AuthService';
-import { passwordResetLimiter, getClientIp } from '@mw/rateLimiter';
+import { passwordResetLimiter, getClientIp, isWithinRateLimit } from '@mw/rateLimiter';
 import { success } from '@lib/utils/api-response';
 
 export const dynamic = 'force-dynamic';
@@ -30,12 +30,14 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
   const emailKey = `email:${parsed.email.toLowerCase()}`;
   const ipKey = `ip:${ip}`;
 
+  // Never throws (Redis outage → per-instance fallback limits). Over-limit
+  // requests get the same generic response, so limits reveal nothing.
   const [emailCheck, ipCheck] = await Promise.all([
-    passwordResetLimiter.limit(emailKey),
-    passwordResetLimiter.limit(ipKey),
+    isWithinRateLimit(passwordResetLimiter, emailKey),
+    isWithinRateLimit(passwordResetLimiter, ipKey),
   ]);
 
-  if (!emailCheck.success || !ipCheck.success) return success(ALWAYS_OK);
+  if (!emailCheck.ok || !ipCheck.ok) return success(ALWAYS_OK);
 
   try {
     await AuthService.requestPasswordReset(parsed.email, ip);

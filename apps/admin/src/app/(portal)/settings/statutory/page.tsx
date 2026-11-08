@@ -1,5 +1,5 @@
 'use client';
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState } from 'react';
 import AdminLayout from '@components/layout/AdminLayout';
 import { Skeleton } from '@components/ui/skeleton';
 import { apiFetch } from '@lib/utils/api-client';
@@ -58,19 +58,16 @@ export default function StatutorySettingsPage() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
 
-  const load = useCallback(async () => {
-    setLoading(true);
-    try {
-      const data = await apiFetch<{ data: StatutoryConfig }>('/api/v1/settings/statutory');
-      setCfg({ ...DEFAULTS, ...data.data });
-    } catch {
-      toast.error('Failed to load statutory settings');
-    } finally {
-      setLoading(false);
-    }
+  // Initial load. `loading` starts true; state is only set from the async
+  // callbacks (never synchronously inside the effect), and not after unmount.
+  useEffect(() => {
+    let active = true;
+    apiFetch<{ data: StatutoryConfig }>('/api/v1/settings/statutory')
+      .then((data) => { if (active) setCfg({ ...DEFAULTS, ...data.data }); })
+      .catch(() => { if (active) toast.error('Failed to load statutory settings'); })
+      .finally(() => { if (active) setLoading(false); });
+    return () => { active = false; };
   }, []);
-
-  useEffect(() => { load(); }, [load]);
 
   async function save() {
     setSaving(true);

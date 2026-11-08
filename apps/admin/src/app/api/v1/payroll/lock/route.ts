@@ -4,7 +4,7 @@ import { LockPayrollSchema, UnlockPayrollSchema } from '@validators/payroll';
 import { PayrollLockService } from '@services/PayrollLockService';
 import { AppError } from '@services/AuthService';
 import { getAuthUser, AuthError } from '@mw/requireAuth';
-import { assertRole } from '@mw/requireRole';
+import { assertAttendanceAdmin } from '@mw/requireRole';
 import { apiError, success } from '@lib/utils/api-response';
 
 export const dynamic = 'force-dynamic';
@@ -16,7 +16,7 @@ async function authenticate(request: NextRequest) {
     if (err instanceof AuthError) throw err;
     throw err;
   }
-  try { assertRole(payload, 'admin'); }
+  try { assertAttendanceAdmin(payload); }
   catch (err) {
     if (err instanceof AppError) throw err;
     throw err;

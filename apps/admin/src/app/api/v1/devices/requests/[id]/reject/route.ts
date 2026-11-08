@@ -4,6 +4,7 @@ import { RejectDeviceRequestSchema } from '@validators/device';
 import { DeviceService } from '@services/DeviceService';
 import { AppError } from '@services/AuthService';
 import { getAuthUser, AuthError } from '@mw/requireAuth';
+import { isAttendanceAdmin } from '@mw/requireRole';
 import { apiError, success } from '@lib/utils/api-response';
 
 export const dynamic = 'force-dynamic';
@@ -22,7 +23,7 @@ export async function PATCH(
     throw err;
   }
 
-  if (payload.role !== 'admin') return apiError('AUTH_006', 'Forbidden.', 403);
+  if (!isAttendanceAdmin(payload.role)) return apiError('AUTH_006', 'Forbidden.', 403);
 
   let body: unknown;
   try {

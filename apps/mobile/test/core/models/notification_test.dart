@@ -4,13 +4,13 @@ import 'package:genesis_workforce/core/models/notification.dart';
 void main() {
   group('AppNotification.fromJson', () {
     final json = {
-      '_id': 'n1',
+      'id': 'n1', // server formatNotification() returns 'id'
       'userId': 'u1',
       'title': 'Leave Approved',
       'body': 'Your casual leave has been approved.',
       'isRead': false,
       'type': 'leave_approved',
-      'referenceId': 'l1',
+      'relatedEntityId': 'l1', // server field name (formatNotification)
       'createdAt': '2026-06-20T10:00:00Z',
     };
 
@@ -24,7 +24,7 @@ void main() {
     });
 
     test('referenceId nullable', () {
-      final n = AppNotification.fromJson({...json}..remove('referenceId'));
+      final n = AppNotification.fromJson({...json}..remove('relatedEntityId'));
       expect(n.referenceId, isNull);
     });
 

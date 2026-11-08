@@ -11,8 +11,8 @@ export const LoginSchema = z.object({
 });
 
 export const RefreshSchema = z.object({
-  refreshToken: z.string().min(1),
-  sessionId: z.string().min(1),
+  refreshToken: z.string().min(1).max(256),
+  sessionId: z.string().min(1).max(64),
 });
 
 export const LogoutSchema = z.object({
@@ -24,7 +24,7 @@ export const ForgotPasswordSchema = z.object({
 });
 
 export const ResetPasswordSchema = z.object({
-  token: z.string().min(1),
+  token: z.string().min(1).max(256),
   email: z.string().email().max(255),
   newPassword: z.string().min(8).max(128),
 });
@@ -33,6 +33,9 @@ export const ChangePasswordSchema = z
   .object({
     currentPassword: z.string().min(1),
     newPassword: z.string().min(8).max(128),
+    // Optional: the caller's own session id. When supplied (and owned by the
+    // caller) that session stays signed in; all other sessions are revoked.
+    sessionId: z.string().regex(/^[0-9a-f]{24}$/i).optional(),
   })
   .refine((d) => d.currentPassword !== d.newPassword, {
     message: 'New password must differ from current password',

@@ -15,6 +15,7 @@ jest.mock('firebase-admin/messaging', () => ({
   }),
 }));
 
+import { sendEmail }          from '@lib/email/brevo';
 import { NotificationService } from '@services/NotificationService';
 import { FcmService }          from '@services/FcmService';
 import { Notification }        from '@models/Notification';
@@ -129,11 +130,12 @@ describe('U-NOT-03: email sent via Brevo with correct payload', () => {
     await new Promise((r) => setImmediate(r));
     await new Promise((r) => setImmediate(r));
 
-    expect(global.fetch).toHaveBeenCalledWith(
-      'https://api.brevo.com/v3/smtp/email',
+    // Email transport is globally mocked (jest.setup.ts); the real Brevo
+    // request payload is verified in __tests__/email/brevo.test.ts.
+    expect(sendEmail).toHaveBeenCalledWith(
       expect.objectContaining({
-        method: 'POST',
-        body:   expect.stringContaining('emp@test.com'),
+        to:      { email: 'emp@test.com', name: 'John Doe' },
+        subject: 'Leave Approved',
       }),
     );
   });

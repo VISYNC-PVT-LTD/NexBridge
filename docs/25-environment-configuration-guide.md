@@ -59,7 +59,7 @@ mongodb+srv://USERNAME:PASSWORD@cluster.XXXXX.mongodb.net/genesis-hrms?retryWrit
 | Variable | Required | Local Dev | Production | Source | Notes |
 |----------|----------|-----------|-----------|--------|-------|
 | `JWT_SECRET` | **YES** | YES | YES | `AuthService.ts:26`, `requireAuth.ts:15`, `proxy.ts:26`, `hash.ts:8` | Signs HS256 access tokens; also HMAC key for IP hashing |
-| `JWT_SECRET_PREVIOUS` | Optional | NO | Rotation only | `requireAuth.ts:21`, `proxy.ts:32` | Leave blank initially; set during key rotation events only |
+| `JWT_SECRET_PREVIOUS` | Optional | NO | Rotation only | `requireAuth.ts:21`, `proxy.ts:32` | Leave blank. Routine rotation only, with `JWT_SECRET_PREVIOUS_EXPIRES_AT` ≤ 24 h ahead; **never a compromised key** (docs/84) |
 
 **Token strategy (all hardcoded — env vars do NOT change these):**
 - Access token: JWT HS256, `JWT_SECRET`, TTL = `'15m'` (hardcoded `AuthService.ts:35`)

@@ -4,7 +4,7 @@ import { LoginSchema } from '@validators/auth';
 
 export const dynamic = 'force-dynamic';
 import { AuthService, AppError } from '@services/AuthService';
-import { authLimiter, getClientIp, checkRateLimit } from '@mw/rateLimiter';
+import { authLimiter, loginAccountLimiter, loginIpLimiter, getClientIp, checkRateLimits } from '@mw/rateLimiter';
 import { success, apiError } from '@lib/utils/api-response';
 
 const ACCESS_TOKEN_TTL_SECONDS = 15 * 60; // 15 minutes — matches JWT expiry
@@ -12,8 +12,6 @@ const REFRESH_TOKEN_TTL_SECONDS = 30 * 24 * 60 * 60; // matches DeviceSession sl
 
 export async function POST(request: NextRequest): Promise<NextResponse> {
   const ip = getClientIp(request);
-  const limited = await checkRateLimit(authLimiter, ip);
-  if (limited) return limited;
 
   let body: unknown;
   try {
@@ -31,6 +29,17 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     }
     throw err;
   }
+
+  // Keyed per ip+account, per account and per IP so colleagues behind one
+  // office IP do not lock each other out, while one account cannot be
+  // brute-forced from many IPs. Same 429 whether or not the account exists.
+  const emailKey = parsed.email.toLowerCase().trim();
+  const limited = await checkRateLimits([
+    [authLimiter, `${ip}|${emailKey}`],
+    [loginAccountLimiter, emailKey],
+    [loginIpLimiter, ip],
+  ]);
+  if (limited) return limited;
 
   try {
     const result = await AuthService.login(

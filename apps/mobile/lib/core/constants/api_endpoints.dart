@@ -26,7 +26,8 @@ class ApiEndpoints {
 
   static const String regularizations = '/api/v1/regularizations';
   static String regularizationById(String id) => '/api/v1/regularizations/$id';
-  static String regularizationCancel(String id) => '/api/v1/regularizations/$id/cancel';
+  // Server contract: PATCH /api/v1/regularizations/:id/withdraw (there is no /cancel route).
+  static String regularizationWithdraw(String id) => '/api/v1/regularizations/$id/withdraw';
 
   static const String notifications = '/api/v1/notifications';
   static String notificationRead(String id) => '/api/v1/notifications/$id/read';

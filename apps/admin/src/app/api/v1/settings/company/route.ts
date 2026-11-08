@@ -4,7 +4,7 @@ import { UpdateCompanySchema } from '@validators/settings';
 import { SettingsService } from '@services/SettingsService';
 import { AppError } from '@services/AuthService';
 import { getAuthUser, AuthError } from '@mw/requireAuth';
-import { assertRole } from '@mw/requireRole';
+import { assertAttendanceAdmin } from '@mw/requireRole';
 import { apiError, success } from '@lib/utils/api-response';
 
 export const dynamic = 'force-dynamic';
@@ -12,7 +12,7 @@ export const dynamic = 'force-dynamic';
 async function getAdmin(request: NextRequest) {
   try {
     const payload = await getAuthUser(request);
-    assertRole(payload, 'admin');
+    assertAttendanceAdmin(payload);
     return payload;
   } catch (err) {
     if (err instanceof AuthError) throw err;

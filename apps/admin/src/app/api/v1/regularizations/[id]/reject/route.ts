@@ -4,7 +4,7 @@ import { RejectRegularizationSchema } from '@validators/regularization';
 import { RegularizationService } from '@services/RegularizationService';
 import { AppError } from '@services/AuthService';
 import { getAuthUser, AuthError } from '@mw/requireAuth';
-import { assertRole } from '@mw/requireRole';
+import { assertAttendanceAdmin } from '@mw/requireRole';
 import { apiError, success } from '@lib/utils/api-response';
 
 export const dynamic = 'force-dynamic';
@@ -20,7 +20,7 @@ export async function PATCH(
     throw err;
   }
 
-  try { assertRole(payload, 'admin'); }
+  try { assertAttendanceAdmin(payload); }
   catch (err) {
     if (err instanceof AuthError) return apiError(err.code, 'Forbidden.', err.httpStatus);
     throw err;

@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { ReportService } from '@services/ReportService';
 import { AppError } from '@services/AuthService';
 import { getAuthUser, AuthError } from '@mw/requireAuth';
-import { assertRole } from '@mw/requireRole';
+import { assertAttendanceAdmin } from '@mw/requireRole';
 import { apiError } from '@lib/utils/api-response';
 
 export const dynamic = 'force-dynamic';
@@ -17,7 +17,7 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
   }
 
   try {
-    assertRole(payload, 'admin');
+    assertAttendanceAdmin(payload);
   } catch (err) {
     if (err instanceof AppError) return apiError(err.code, err.message, err.httpStatus);
     throw err;

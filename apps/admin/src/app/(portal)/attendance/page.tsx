@@ -93,7 +93,11 @@ export default function AttendancePage() {
                     <td className="px-4 py-3 text-gray-600">{format(parseISO(r.date), 'dd MMM yy')}</td>
                     <td className="px-4 py-3"><StatusBadge status={r.status} /></td>
                     <td className="px-4 py-3 font-mono text-xs text-gray-600">{r.checkIn  ?? '—'}</td>
-                    <td className="px-4 py-3 font-mono text-xs text-gray-600">{r.checkOut ?? '—'}</td>
+                    <td className="px-4 py-3 font-mono text-xs text-gray-600">
+                      {r.checkOut ?? (r.missedCheckout
+                        ? <span className="font-sans text-red-600">Missed{r.hasUnresolvedMissedCheckout ? ' (unresolved)' : ''}</span>
+                        : r.isCheckedIn ? <span className="font-sans text-green-700">Checked in</span> : '—')}
+                    </td>
                     <td className="px-4 py-3 text-gray-600">{r.workHours != null ? `${r.workHours}h` : '—'}</td>
                   </tr>
                 ))}

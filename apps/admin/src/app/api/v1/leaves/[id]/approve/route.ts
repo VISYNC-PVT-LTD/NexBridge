@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { LeaveService } from '@services/LeaveService';
 import { AppError } from '@services/AuthService';
 import { getAuthUser, AuthError } from '@mw/requireAuth';
-import { assertRole } from '@mw/requireRole';
+import { assertAttendanceAdmin } from '@mw/requireRole';
 import { apiError } from '@lib/utils/api-response';
 
 export const dynamic = 'force-dynamic';
@@ -14,7 +14,7 @@ export async function PATCH(
   let payload;
   try {
     payload = await getAuthUser(request);
-    assertRole(payload, 'admin');
+    assertAttendanceAdmin(payload);
   } catch (err) {
     if (err instanceof AuthError) return apiError(err.code, 'Unauthorized.', err.httpStatus);
     throw err;
