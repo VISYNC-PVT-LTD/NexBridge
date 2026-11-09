@@ -77,6 +77,24 @@ export class SettingsService {
     if (merged.workStartTime && merged.workEndTime && merged.workStartTime === merged.workEndTime) {
       throw new AppError('GEN_001', 400, 'workStartTime and workEndTime cannot be equal.');
     }
+    // Half-day late cut-off vs the shift window. DayStatusEngine compares clock
+    // minutes of the same calendar day (no wrap past midnight), so:
+    //  - same-day shift (end > start): start < cut-off <= end;
+    //  - overnight shift (end < start — kept allowed; see docs/86 open rules):
+    //    the cut-off must be after start and before midnight, otherwise EVERY
+    //    check-in (e.g. 22:10 vs a 02:00 cut-off) would be capped to half-day.
+    if (merged.workStartTime && merged.workEndTime && merged.halfDayLateCheckInTime) {
+      const toMin = (t: string) => { const [h, m] = t.split(':').map(Number); return h * 60 + m; };
+      const start = toMin(merged.workStartTime);
+      const end = toMin(merged.workEndTime);
+      const cutoff = toMin(merged.halfDayLateCheckInTime);
+      if (end > start && !(cutoff > start && cutoff <= end)) {
+        throw new AppError('GEN_001', 400, 'halfDayLateCheckInTime must be after workStartTime and no later than workEndTime.');
+      }
+      if (end < start && !(cutoff > start)) {
+        throw new AppError('GEN_001', 400, 'For a shift that ends after midnight, halfDayLateCheckInTime must be after workStartTime and before midnight.');
+      }
+    }
 
     const updated = await CompanySettings.findByIdAndUpdate(
       'company-settings',
@@ -139,6 +157,16 @@ export class SettingsService {
     if (data.allowedOfficeIps !== undefined)
       $set.allowedOfficeIps = data.allowedOfficeIps;
     if (Object.keys($set).length === 0) throw new AppError('GEN_001', 400, 'No fields to update.');
+
+    // Office-network mode with no allowed IP would refuse every check-in.
+    // Checked against the values in effect AFTER this (possibly partial) update.
+    const current = await CompanySettings.findById('company-settings').lean() as ICompanySettings | null;
+    const nextMode = data.attendanceValidationMode ?? current?.attendanceValidationMode ?? 'geofence';
+    const nextIps  = data.allowedOfficeIps ?? current?.allowedOfficeIps ?? [];
+    if (nextMode === 'officeIp' && nextIps.length === 0) {
+      throw new AppError('GEN_001', 400, 'Office network mode needs at least one allowed office IP.');
+    }
+
     const updated = await CompanySettings.findByIdAndUpdate(
       'company-settings',
       { $set },

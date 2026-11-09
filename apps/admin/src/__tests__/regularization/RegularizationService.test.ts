@@ -80,6 +80,11 @@ beforeEach(() => {
   } as unknown as mongoose.ClientSession);
 
   jest.spyOn(AuditLog, 'create').mockResolvedValue([] as never);
+  // reconcileForSession reads the day's status first (weekly-off / holiday /
+  // leave days keep their status); default = an ordinary working day.
+  jest.spyOn(AttendanceDay, 'findById').mockReturnValue({
+    session: jest.fn().mockReturnValue({ lean: jest.fn().mockResolvedValue({ status: 'absent' }) }),
+  } as unknown as ReturnType<typeof AttendanceDay.findById>);
   jest.spyOn(CompanySettings, 'findById').mockReturnValue({
     lean: jest.fn().mockResolvedValue(makeSettings()),
   } as unknown as ReturnType<typeof CompanySettings.findById>);

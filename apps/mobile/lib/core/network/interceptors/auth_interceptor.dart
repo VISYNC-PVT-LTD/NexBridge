@@ -13,6 +13,23 @@ typedef SessionExpiredCallback = void Function();
 bool isDefinitiveRefreshRejection(int? statusCode) =>
     statusCode == 401 || statusCode == 403;
 
+/// Endpoints where a 401 means "wrong credentials" (or an intentional
+/// sign-out), NOT an expired session. These are called before/without a
+/// session — e.g. the device-registration screen re-checks the password — so
+/// a 401 must be shown to the user as an error instead of triggering the
+/// "Session Expired" flow.
+bool isCredentialCheckPath(String path) {
+  const paths = [
+    ApiEndpoints.login,
+    ApiEndpoints.forgotPassword,
+    ApiEndpoints.resetPassword,
+    ApiEndpoints.logout,
+    ApiEndpoints.deviceRequest,
+    ApiEndpoints.deviceRequestStatus,
+  ];
+  return paths.any((p) => path.endsWith(p));
+}
+
 class AuthInterceptor extends Interceptor {
   final Dio _dio;
   SessionExpiredCallback? onSessionExpired;
@@ -52,8 +69,7 @@ class AuthInterceptor extends Interceptor {
     // Logout is included: a 401 there means the token was already expired/invalid,
     // but we are intentionally clearing the session — not losing it unexpectedly.
     // Pass through so logout always completes without triggering the session-expiry flow.
-    final publicPaths = [ApiEndpoints.login, ApiEndpoints.forgotPassword, ApiEndpoints.resetPassword, ApiEndpoints.logout];
-    if (publicPaths.any((path) => err.requestOptions.path.endsWith(path))) {
+    if (isCredentialCheckPath(err.requestOptions.path)) {
       handler.next(err);
       return;
     }

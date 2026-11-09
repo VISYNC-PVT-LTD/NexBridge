@@ -38,6 +38,24 @@ function deductionSplit(
   return { fromCf, fromCy };
 }
 
+/**
+ * When an approved leave is withdrawn/revoked, a FUTURE AttendanceDay that holds
+ * nothing but that leave (created by the approval) must be removed — recomputing
+ * its status from 0 minutes would fabricate an "absent" for a day that has not
+ * happened yet. Past/today days, and any day with sessions, minutes, a missed
+ * check-out link or a regularization keep the normal status recomputation.
+ */
+async function isLeaveOnlyFutureDay(
+  day: { _id: mongoose.Types.ObjectId; dateString: string; totalMinutes?: number; missedCheckoutSessionId?: unknown; isRegularized?: boolean; regularizationRequestId?: unknown },
+  todayStr: string,
+  mongoSession: mongoose.ClientSession,
+): Promise<boolean> {
+  if (!day.dateString || day.dateString <= todayStr) return false; // unknown date ⇒ never treat as future
+  if ((day.totalMinutes ?? 0) > 0 || day.missedCheckoutSessionId || day.isRegularized || day.regularizationRequestId) return false;
+  const sessions = await AttendanceSession.countDocuments({ attendanceDayId: day._id }).session(mongoSession);
+  return sessions === 0;
+}
+
 function formatLeave(leave: ILeave & { _id: mongoose.Types.ObjectId }, employeeName?: string) {
   return {
     id:          leave._id.toHexString(),
@@ -270,7 +288,13 @@ export class LeaveService {
       throw new AppError('AUTH_006', 403, 'Access denied.');
     }
 
-    return formatLeave(leave);
+    // Same employee-name enrichment the list endpoint gives admins.
+    let employeeName: string | undefined;
+    if (isAttendanceAdmin(role)) {
+      const u = await User.findById(leave.employeeId, 'firstName lastName').lean() as { firstName: string; lastName: string } | null;
+      if (u) employeeName = `${u.firstName} ${u.lastName}`;
+    }
+    return formatLeave(leave, employeeName);
   }
 
   // ─── Cancel ─────────────────────────────────────────────────────────────────
@@ -604,9 +628,14 @@ export class LeaveService {
         }
 
         // Reset AttendanceDay.status for all affectedDates (BR-LVE-21)
+        const revokeTodayStr = new Date().toISOString().slice(0, 10);
         for (const dateStr of affectedDates) {
           const day = await AttendanceDay.findOne({ employeeId, dateString: dateStr }).session(mongoSession).lean();
           if (!day) continue;
+          if (await isLeaveOnlyFutureDay(day, revokeTodayStr, mongoSession)) {
+            await AttendanceDay.deleteOne({ _id: day._id }, { session: mongoSession });
+            continue;
+          }
           // A day whose missed check-out was resolved only by this leave goes
           // back to absent + unresolved (docs/85); otherwise derive from minutes.
           const missedUnresolvedAgain = !!day.missedCheckoutSessionId && !day.isRegularized;
@@ -621,7 +650,7 @@ export class LeaveService {
             { _id: day._id },
             {
               $set:   { status: priorStatus, ...(missedUnresolvedAgain ? { hasUnresolvedMissedCheckout: true } : {}) },
-              $unset: { leaveRequestId: '', leaveType: '', leaveDuration: '' },
+              $unset: { leaveRequestId: '', leaveType: '', leaveDuration: '', leaveHalfDayPeriod: '' },
             },
             { session: mongoSession },
           );
@@ -749,6 +778,10 @@ export class LeaveService {
         for (const dateStr of affectedDates) {
           const day = await AttendanceDay.findOne({ employeeId, dateString: dateStr }).session(mongoSession).lean();
           if (!day) continue;
+          if (await isLeaveOnlyFutureDay(day, todayStr, mongoSession)) {
+            await AttendanceDay.deleteOne({ _id: day._id }, { session: mongoSession });
+            continue;
+          }
           // A day whose missed check-out was resolved only by this leave goes
           // back to absent + unresolved (docs/85); otherwise derive from minutes.
           const missedUnresolvedAgain = !!day.missedCheckoutSessionId && !day.isRegularized;

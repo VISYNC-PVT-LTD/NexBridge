@@ -3,11 +3,19 @@ import { z } from 'zod';
 const LEAVE_TYPES = ['paidLeave', 'sickLeave', 'casualLeave', 'lwp'] as const;
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
+// Backward compatibility: mobile builds up to 1.0.0 send these short codes
+// (and no `duration`), so every leave application from the app was rejected.
+// The mapping is one-to-one with the app's own labels (Paid/Sick/Casual/LWP).
+const LEGACY_LEAVE_TYPE_CODES: Record<string, (typeof LEAVE_TYPES)[number]> = {
+  PL: 'paidLeave', SL: 'sickLeave', CL: 'casualLeave', LWP: 'lwp',
+};
+
 export const ApplyLeaveSchema = z.object({
-  leaveType:     z.enum(LEAVE_TYPES),
+  leaveType:     z.preprocess((v) => (typeof v === 'string' && LEGACY_LEAVE_TYPE_CODES[v]) || v, z.enum(LEAVE_TYPES)),
   startDate:     z.string().regex(DATE_RE, 'startDate must be YYYY-MM-DD'),
   endDate:       z.string().regex(DATE_RE, 'endDate must be YYYY-MM-DD'),
-  duration:      z.enum(['full', 'half']),
+  // Clients without a half-day option (the mobile app) omit it: a full day.
+  duration:      z.enum(['full', 'half']).default('full'),
   halfDayPeriod: z.enum(['morning', 'afternoon']).optional(),
   reason:        z.string().max(500).optional(),
 }).superRefine((v, ctx) => {
@@ -34,7 +42,7 @@ export const RevokeLeaveSchema = z.object({
 
 export const LeaveListQuerySchema = z.object({
   employeeId: z.string().optional(),
-  status:     z.enum(['pending','approved','rejected','cancelled','revoked']).optional(),
+  status:     z.enum(['pending','approved','rejected','cancelled','revoked','withdrawn']).optional(),
   leaveType:  z.enum(LEAVE_TYPES).optional(),
   leaveYear:  z.coerce.number().int().min(2000).optional(),
   startDate:  z.string().regex(DATE_RE).optional(),

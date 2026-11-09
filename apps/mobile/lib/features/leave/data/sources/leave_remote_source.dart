@@ -43,11 +43,36 @@ class LeaveRemoteSource {
   }
 
   Future<LeaveRequest> apply({required String leaveType, required String startDate, required String endDate, required String reason}) async {
-    final r = await _dio.post(ApiEndpoints.leaves, data: {'leaveType': leaveType, 'startDate': startDate, 'endDate': endDate, 'reason': reason});
+    final r = await _dio.post(ApiEndpoints.leaves, data: leaveApplyBody(leaveType: leaveType, startDate: startDate, endDate: endDate, reason: reason));
     return LeaveRequest.fromJson((r.data as Map<String, dynamic>)['data'] as Map<String, dynamic>);
   }
 
   Future<void> cancel(String id) async {
     await _dio.patch(ApiEndpoints.leaveCancel(id));
   }
+}
+
+/// Request body for POST /api/v1/leaves (contract: validators/leave.ts ApplyLeaveSchema).
+/// The app only offers full-day leave, so `duration` is always 'full'.
+/// Regression: the app sent 'PL'/'SL'/'CL'/'LWP' and no `duration`, so every
+/// leave application from the phone was rejected with 400.
+Map<String, dynamic> leaveApplyBody({required String leaveType, required String startDate, required String endDate, required String reason}) => {
+      'leaveType': leaveType,
+      'startDate': startDate,
+      'endDate': endDate,
+      'duration': 'full',
+      'reason': reason,
+    };
+
+/// The server's own reason (e.g. "Insufficient leave balance.") instead of a generic failure.
+String leaveSubmitErrorMessage(Object e) {
+  if (e is DioException) {
+    final body = e.response?.data;
+    if (body is Map<String, dynamic>) {
+      final msg = (body['error'] as Map<String, dynamic>?)?['message'] as String?;
+      if (msg != null && msg.isNotEmpty) return msg;
+    }
+    if (e.response == null) return 'No connection. Check your network and try again.';
+  }
+  return 'Submission failed. Please try again.';
 }

@@ -77,5 +77,36 @@ void main() {
       expect(t.forgotCheckout, isTrue);
       expect(t.staleSession!.dateString, '2026-03-02');
     });
+
+    // Regression (found on a real phone): with two unresolved missed
+    // check-outs the home screen showed only the latest (staleSession) date;
+    // the server's unresolvedMissedCheckoutDates list was never parsed.
+    test('every unresolved missed check-out date gets a banner, oldest first', () {
+      final t = TodayAttendance.fromJson({
+        'date': '2026-11-09', 'status': 'absent', 'isCheckedIn': false, 'forgotCheckout': true,
+        'staleSession': {'dateString': '2026-11-08', 'checkInTimestamp': '2026-11-08T09:16:22Z'},
+        'unresolvedMissedCheckoutDates': ['2026-11-08', '2026-11-06'],
+        'sessions': <dynamic>[], 'totalMinutesToday': 0,
+      });
+      expect(t.missedCheckoutDates, ['2026-11-06', '2026-11-08']);
+    });
+
+    test('older server without the list: falls back to the stale session date', () {
+      final t = TodayAttendance.fromJson({
+        'date': '2026-03-03', 'status': 'absent', 'isCheckedIn': false, 'forgotCheckout': true,
+        'staleSession': {'dateString': '2026-03-02', 'checkInTimestamp': null},
+        'sessions': <dynamic>[], 'totalMinutesToday': 0,
+      });
+      expect(t.missedCheckoutDates, ['2026-03-02']);
+    });
+
+    test('nothing unresolved: no banner dates', () {
+      final t = TodayAttendance.fromJson({
+        'date': '2026-11-09', 'status': 'present', 'isCheckedIn': false, 'forgotCheckout': false,
+        'unresolvedMissedCheckoutDates': <dynamic>[],
+        'sessions': <dynamic>[], 'totalMinutesToday': 0,
+      });
+      expect(t.missedCheckoutDates, isEmpty);
+    });
   });
 }

@@ -12,6 +12,7 @@ import { TableSkeleton } from '@components/ui/skeleton';
 import Link from 'next/link';
 import { useAttendance } from '@/hooks/useAttendance';
 import { usePagination } from '@/hooks/usePagination';
+import { displayDayStatus } from '@lib/utils/attendance-display';
 import type { AttendanceRecord, Employee } from '@/types/api';
 
 let _d: ReturnType<typeof setTimeout> | null = null;
@@ -91,7 +92,7 @@ export default function AttendancePage() {
                   <tr key={r._id} className="border-b border-gray-100 hover:bg-gray-50">
                     <td className="px-4 py-3 font-medium text-gray-900">{empName(r)}</td>
                     <td className="px-4 py-3 text-gray-600">{format(parseISO(r.date), 'dd MMM yy')}</td>
-                    <td className="px-4 py-3"><StatusBadge status={r.status} /></td>
+                    <td className="px-4 py-3"><StatusBadge status={displayDayStatus(r.status, r.isCheckedIn)} /></td>
                     <td className="px-4 py-3 font-mono text-xs text-gray-600">{r.checkIn  ?? '—'}</td>
                     <td className="px-4 py-3 font-mono text-xs text-gray-600">
                       {r.checkOut ?? (r.missedCheckout

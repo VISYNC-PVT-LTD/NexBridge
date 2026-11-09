@@ -37,16 +37,37 @@ interface GuardState {
 
 const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost', '::1', '[::1]']);
 
-const state: GuardState = {
-  allowedLoopbackPorts: new Set<number>(),
-  blockedAttempts: [],
-  allowLoopbackPort(port: number) {
-    state.allowedLoopbackPorts.add(Number(port));
-  },
-  revokeLoopbackPort(port: number) {
-    state.allowedLoopbackPorts.delete(Number(port));
-  },
-};
+// This setup file runs once PER TEST FILE, but `net`, `http` and `https` are
+// Node core modules shared by every test file in the same Jest worker process.
+// The guard state and the core-module patches must therefore be per WORKER:
+// previously each file stacked a new wrapper with its own allow-list on top of
+// the previous file's wrapper, so a later file's allowLoopbackPort() was
+// checked against an older, stale allow-list and its own isolated MongoDB was
+// blocked (integration suites failed whenever two shared a worker, e.g. CI).
+// NOTE: anchored on the `net` core-module object itself — that object IS shared
+// across test files in a worker (that is why wrappers used to stack), whereas
+// Jest gives every test file its own copy of `process` and of `globalThis`.
+const STATE_KEY = Symbol.for('genesis.test-network-guard.state');
+const PATCHED_KEY = Symbol.for('genesis.test-network-guard.core-patched');
+const proc = net as unknown as Record<symbol, unknown>;
+
+if (!proc[STATE_KEY]) {
+  const s: GuardState = {
+    allowedLoopbackPorts: new Set<number>(),
+    blockedAttempts: [],
+    allowLoopbackPort(port: number) {
+      s.allowedLoopbackPorts.add(Number(port));
+    },
+    revokeLoopbackPort(port: number) {
+      s.allowedLoopbackPorts.delete(Number(port));
+    },
+  };
+  proc[STATE_KEY] = s;
+}
+const state = proc[STATE_KEY] as GuardState;
+// Every test file starts with an empty allow-list and attempt log.
+state.allowedLoopbackPorts.clear();
+state.blockedAttempts.length = 0;
 
 (globalThis as unknown as { __TEST_NETWORK_GUARD__: GuardState }).__TEST_NETWORK_GUARD__ = state;
 
@@ -60,7 +81,12 @@ function block(target: string): never {
   throw new BlockedNetworkError(target);
 }
 
+// Core modules are patched once per worker (see above).
+const corePatched = proc[PATCHED_KEY] === true;
+proc[PATCHED_KEY] = true;
+
 // ── Raw sockets ────────────────────────────────────────────────────────────
+if (!corePatched) {
 const originalConnect = net.Socket.prototype.connect;
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 (net.Socket.prototype as any).connect = function guardedConnect(this: net.Socket, ...args: any[]) {
@@ -126,6 +152,10 @@ function guardHttp(mod: typeof http | typeof https, scheme: string) {
 }
 guardHttp(http, 'http');
 guardHttp(https, 'https');
+} // end: once-per-worker core-module patches
+
+// fetch lives on the per-test-file global, so it is guarded per file (using
+// the shared, per-worker state above).
 
 // ── fetch ──────────────────────────────────────────────────────────────────
 const originalFetch = globalThis.fetch;

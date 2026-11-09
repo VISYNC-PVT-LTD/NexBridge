@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:intl/intl.dart';
 import '../../../../core/models/regularization.dart';
 import '../../../../shared/widgets/app_button.dart';
+import '../../../../shared/widgets/confirm_dialog.dart';
 import '../../../../shared/widgets/error_widget.dart';
 import '../../../../shared/widgets/loading_overlay.dart';
 import '../providers/regularization_provider.dart';
@@ -91,16 +92,11 @@ class _CancelBtnState extends ConsumerState<_CancelBtn> {
       loading: _loading,
       onPressed: () async {
         final messenger = ScaffoldMessenger.of(context);
-        final confirm = await showDialog<bool>(
-          context: context,
-          builder: (_) => AlertDialog(
-            title: const Text('Withdraw?'),
-            content: const Text('Cancel this regularization request?'),
-            actions: [
-              TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('No')),
-              TextButton(onPressed: () => Navigator.pop(context, true), child: const Text('Yes, Withdraw')),
-            ],
-          ),
+        final confirm = await showConfirmDialog(
+          context,
+          title: 'Withdraw?',
+          message: 'Cancel this regularization request?',
+          confirmLabel: 'Yes, Withdraw',
         );
         if (confirm != true) return;
         setState(() => _loading = true);

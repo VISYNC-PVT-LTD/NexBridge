@@ -24,7 +24,8 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
   let parsed;
   try { parsed = ApplyLeaveSchema.parse(body); }
   catch (err) {
-    if (err instanceof ZodError) return apiError('GEN_001', 'Validation failed.', 400);
+    // Employee-facing form: return the specific reason so the app can show it.
+    if (err instanceof ZodError) return apiError('GEN_001', err.errors[0]?.message ?? 'Validation failed.', 400);
     throw err;
   }
 

@@ -25,6 +25,17 @@ export const CreateRegularizationSchema = z
     if (data.type === 'forgotCheckOut' && !data.requestedCheckOut) {
       ctx.addIssue({ code: 'custom', message: 'requestedCheckOut is required for forgotCheckOut', path: ['requestedCheckOut'] });
     }
+    // When both times are supplied they must form a real session: check-out
+    // after check-in and within the 24-hour window (same rule as REG_007 at approval).
+    if (data.requestedCheckIn && data.requestedCheckOut) {
+      const inMs  = Date.parse(data.requestedCheckIn);
+      const outMs = Date.parse(data.requestedCheckOut);
+      if (outMs <= inMs) {
+        ctx.addIssue({ code: 'custom', message: 'requestedCheckOut must be after requestedCheckIn', path: ['requestedCheckOut'] });
+      } else if (outMs - inMs > 24 * 60 * 60 * 1000) {
+        ctx.addIssue({ code: 'custom', message: 'requestedCheckOut must be within 24 hours of requestedCheckIn', path: ['requestedCheckOut'] });
+      }
+    }
   });
 
 export const RejectRegularizationSchema = z.object({

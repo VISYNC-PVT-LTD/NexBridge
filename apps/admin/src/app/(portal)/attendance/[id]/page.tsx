@@ -5,13 +5,14 @@ import AdminLayout from '@components/layout/AdminLayout';
 import StatusBadge from '@components/shared/StatusBadge';
 import { Skeleton } from '@components/ui/skeleton';
 import { useAttendanceRecord } from '@/hooks/useAttendance';
+import { displayDayStatus } from '@lib/utils/attendance-display';
 
 type HistoryDay = {
   dateString: string;
   status: string;
   totalMinutes: number;
   hasUnresolvedMissedCheckout?: boolean;
-  sessions?: Array<{ checkInTimestamp: string; checkOutTimestamp: string | null; missedCheckout?: boolean }>;
+  sessions?: Array<{ checkInTimestamp: string; checkOutTimestamp: string | null; missedCheckout?: boolean; isActive?: boolean }>;
 };
 
 export default function AttendanceEmployeePage() {
@@ -60,7 +61,7 @@ export default function AttendanceEmployeePage() {
                 return (
                   <tr key={r.dateString} className="border-b border-gray-100">
                     <td className="px-4 py-3">{format(parseISO(r.dateString), 'dd MMM yyyy')}</td>
-                    <td className="px-4 py-3"><StatusBadge status={r.status} /></td>
+                    <td className="px-4 py-3"><StatusBadge status={displayDayStatus(r.status, sessions.some((x) => x.isActive))} /></td>
                     <td className="px-4 py-3 font-mono text-xs">{fmt(first?.checkInTimestamp) ?? '—'}</td>
                     <td className="px-4 py-3 font-mono text-xs">
                       {fmt(last?.checkOutTimestamp) ?? (missed

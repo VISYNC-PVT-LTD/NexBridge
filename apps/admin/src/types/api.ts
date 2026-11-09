@@ -37,20 +37,24 @@ export interface AttendanceRecord {
   createdAt: string;
 }
 
+/** Mirrors LeaveService.formatLeave() — the shape every /api/v1/leaves endpoint returns. */
 export interface LeaveRequest {
-  _id: string;
-  employeeId: string | Employee;
+  id: string;
+  employeeId: string;
+  employeeName: string | null;
   leaveType: LeaveTypeCode;
+  duration: 'full' | 'half';
+  halfDayPeriod: 'morning' | 'afternoon' | null;
   startDate: string;
   endDate: string;
-  days: number;
-  reason: string;
+  totalDays: number;
+  affectedDates: string[];
   status: LeaveStatus;
-  reviewedBy?: string | Employee;
-  reviewedAt?: string;
-  reviewRemark?: string;
+  reason: string | null;
+  reviewRemarks: string | null;
+  reviewedBy: string | null;
+  reviewedAt: string | null;
   createdAt: string;
-  updatedAt: string;
 }
 
 export interface RegularizationRequest {
@@ -142,6 +146,7 @@ export interface Settings {
     startTime: string;
     endTime: string;
     gracePeriodMinutes: number;
+    halfDayLateCheckInTime?: string;
   };
   geofence?: {
     lat: number;

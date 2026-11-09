@@ -9,7 +9,7 @@ import StatusBadge from '@components/shared/StatusBadge';
 import { Skeleton } from '@components/ui/skeleton';
 import LeaveApprovalForm from '@components/forms/LeaveApprovalForm';
 import { useLeave } from '@/hooks/useLeaves';
-import type { Employee } from '@/types/api';
+import { leaveTypeLabel } from '@/types/enums';
 
 function Row({ label, value }: { label: string; value: React.ReactNode }) {
   return (
@@ -40,8 +40,7 @@ export default function LeaveDetailPage() {
     );
   }
 
-  const emp = typeof leave.employeeId === 'object' ? leave.employeeId as Employee : null;
-  const empLabel = emp ? `${emp.firstName} ${emp.lastName}` : String(leave.employeeId);
+  const empLabel = leave.employeeName ?? leave.employeeId;
 
   return (
     <AdminLayout breadcrumb={[{ label: 'Leave', href: '/leave' }, { label: 'Leave Request' }]}>
@@ -59,14 +58,15 @@ export default function LeaveDetailPage() {
         <div className="bg-white rounded-xl border border-gray-200 p-6">
           <dl>
             <Row label="Employee"     value={empLabel} />
-            <Row label="Leave Type"   value={leave.leaveType} />
+            <Row label="Leave Type"   value={leaveTypeLabel(leave.leaveType)} />
             <Row label="Start Date"   value={format(parseISO(leave.startDate), 'dd MMM yyyy')} />
             <Row label="End Date"     value={format(parseISO(leave.endDate),   'dd MMM yyyy')} />
-            <Row label="Days"         value={leave.days} />
+            <Row label="Days"         value={leave.totalDays} />
+            {leave.duration === 'half' && <Row label="Half Day" value={leave.halfDayPeriod ?? '—'} />}
             <Row label="Reason"       value={leave.reason} />
             <Row label="Status"       value={<StatusBadge status={leave.status} />} />
             {leave.reviewedAt  && <Row label="Reviewed At"  value={format(parseISO(leave.reviewedAt), 'dd MMM yyyy HH:mm')} />}
-            {leave.reviewRemark && <Row label="Remark"      value={leave.reviewRemark} />}
+            {leave.reviewRemarks && <Row label="Remark"      value={leave.reviewRemarks} />}
             <Row label="Applied On"   value={format(parseISO(leave.createdAt), 'dd MMM yyyy')} />
           </dl>
         </div>

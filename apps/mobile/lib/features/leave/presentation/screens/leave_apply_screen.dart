@@ -4,6 +4,7 @@ import 'package:go_router/go_router.dart';
 import 'package:intl/intl.dart';
 import '../../../../shared/widgets/app_button.dart';
 import '../providers/leave_provider.dart';
+import '../../data/sources/leave_remote_source.dart';
 
 class LeaveApplyScreen extends ConsumerStatefulWidget {
   const LeaveApplyScreen({super.key});
@@ -14,17 +15,18 @@ class LeaveApplyScreen extends ConsumerStatefulWidget {
 
 class _LeaveApplyScreenState extends ConsumerState<LeaveApplyScreen> {
   final _reasonCtrl = TextEditingController();
-  String _leaveType = 'PL';
+  // Codes must match the API enum (validators/leave.ts LEAVE_TYPES).
+  String _leaveType = 'paidLeave';
   DateTime? _startDate;
   DateTime? _endDate;
   bool _loading = false;
   String? _error;
 
   static const _types = [
-    ('PL', 'Paid Leave'),
-    ('SL', 'Sick Leave'),
-    ('CL', 'Casual Leave'),
-    ('LWP', 'Leave Without Pay'),
+    ('paidLeave', 'Paid Leave'),
+    ('sickLeave', 'Sick Leave'),
+    ('casualLeave', 'Casual Leave'),
+    ('lwp', 'Leave Without Pay'),
   ];
 
   int get _days {
@@ -70,7 +72,7 @@ class _LeaveApplyScreenState extends ConsumerState<LeaveApplyScreen> {
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Leave request submitted.')));
       context.pop();
     } catch (e) {
-      setState(() { _loading = false; _error = 'Submission failed. Please try again.'; });
+      setState(() { _loading = false; _error = leaveSubmitErrorMessage(e); });
     }
   }
 

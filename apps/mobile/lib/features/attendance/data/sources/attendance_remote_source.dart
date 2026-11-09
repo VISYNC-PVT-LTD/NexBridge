@@ -20,6 +20,7 @@ class AttendanceRemoteSource {
       'isCheckedIn': raw['isCheckedIn'] ?? false,
       'forgotCheckout': raw['forgotCheckout'] ?? false,
       'staleSession': raw['staleSession'],
+      'unresolvedMissedCheckoutDates': raw['unresolvedMissedCheckoutDates'] ?? const <String>[],
       'currentSessionStart': currentSession?['checkInTimestamp'],
       'currentSessionDeadline': currentSession?['checkoutDeadline'],
       'sessions': rawSessions.map((s) {

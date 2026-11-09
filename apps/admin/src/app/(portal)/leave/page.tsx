@@ -16,14 +16,11 @@ import LeaveApprovalForm from '@components/forms/LeaveApprovalForm';
 import Link from 'next/link';
 import { useLeaves } from '@/hooks/useLeaves';
 import { usePagination } from '@/hooks/usePagination';
-import type { LeaveRequest, Employee } from '@/types/api';
+import type { LeaveRequest } from '@/types/api';
+import { leaveTypeLabel } from '@/types/enums';
 
 function empName(leave: LeaveRequest) {
-  if (typeof leave.employeeId === 'object' && leave.employeeId !== null) {
-    const e = leave.employeeId as Employee;
-    return `${e.firstName} ${e.lastName}`;
-  }
-  return String(leave.employeeId);
+  return leave.employeeName ?? leave.employeeId;
 }
 
 export default function LeavesPage() {
@@ -67,6 +64,7 @@ export default function LeavesPage() {
             <option value="rejected">Rejected</option>
             <option value="cancelled">Cancelled</option>
             <option value="revoked">Revoked</option>
+            <option value="withdrawn">Withdrawn</option>
           </Select>
           <Input type="date" value={startDate} onChange={e => updateParam('startDate', e.target.value)} className="w-40" placeholder="From" />
           <Input type="date" value={endDate}   onChange={e => updateParam('endDate',   e.target.value)} className="w-40" placeholder="To" />
@@ -88,12 +86,12 @@ export default function LeavesPage() {
             ) : (
               <tbody>
                 {leaves.map(leave => (
-                  <tr key={leave._id} className="border-b border-gray-100 hover:bg-gray-50 cursor-pointer" onClick={() => router.push(`/leave/${leave._id}`)}>
+                  <tr key={leave.id} className="border-b border-gray-100 hover:bg-gray-50 cursor-pointer" onClick={() => router.push(`/leave/${leave.id}`)}>
                     <td className="px-4 py-3 font-medium text-gray-900">{empName(leave)}</td>
-                    <td className="px-4 py-3 text-gray-600 font-mono text-xs">{leave.leaveType}</td>
+                    <td className="px-4 py-3 text-gray-600">{leaveTypeLabel(leave.leaveType)}{leave.duration === 'half' && leave.halfDayPeriod ? ` (½ ${leave.halfDayPeriod})` : ''}</td>
                     <td className="px-4 py-3 text-gray-600">{format(parseISO(leave.startDate), 'dd MMM yy')}</td>
                     <td className="px-4 py-3 text-gray-600">{format(parseISO(leave.endDate),   'dd MMM yy')}</td>
-                    <td className="px-4 py-3 text-gray-600">{leave.days}</td>
+                    <td className="px-4 py-3 text-gray-600">{leave.totalDays}</td>
                     <td className="px-4 py-3"><StatusBadge status={leave.status} /></td>
                     <td className="px-4 py-3 text-gray-500 text-xs">{format(parseISO(leave.createdAt), 'dd MMM yy')}</td>
                     <td className="px-4 py-3 text-right">

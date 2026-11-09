@@ -139,58 +139,54 @@ export async function proxy(request: NextRequest) {
     request.cookies.get('__session')?.value ??
     request.headers.get('Authorization')?.replace('Bearer ', '');
 
-  if (!token) {
-    if (isApi) {
-      return NextResponse.json(
-        { success: false, error: { code: 'AUTH_003', message: 'Unauthorized.' } },
-        { status: 401 },
-      );
+  if (token) {
+    try {
+      const payload = await verifyJwt(token);
+      const denied = evaluateAuthorized(payload, pathname, isApi, request.url);
+      return denied ?? NextResponse.next();
+    } catch {
+      // Access token invalid/expired — fall through to the inline refresh.
     }
-    return NextResponse.redirect(new URL('/login', request.url));
   }
 
-  try {
-    const payload = await verifyJwt(token);
-    const denied = evaluateAuthorized(payload, pathname, isApi, request.url);
-    return denied ?? NextResponse.next();
-  } catch {
-    // Access token invalid/expired — attempt one inline refresh via the
-    // HttpOnly refresh cookie before falling back to login/401.
-    const refreshed = await attemptInlineRefresh(request);
-    if (refreshed) {
-      const newAccessToken = refreshed.accessToken;
-      try {
-        const payload = await verifyJwt(newAccessToken);
-        const denied = evaluateAuthorized(payload, pathname, isApi, request.url);
-        const response = denied ?? NextResponse.next();
-        response.cookies.set('__session', newAccessToken, {
+  // No usable access token. The __session cookie's maxAge equals the access
+  // token TTL, so once it expires the browser DROPS the cookie and `token` is
+  // undefined — the refresh must be attempted in that case too, otherwise every
+  // page load after 15 idle minutes bounces a still-valid session to /login.
+  const refreshed = await attemptInlineRefresh(request);
+  if (refreshed) {
+    const newAccessToken = refreshed.accessToken;
+    try {
+      const payload = await verifyJwt(newAccessToken);
+      const denied = evaluateAuthorized(payload, pathname, isApi, request.url);
+      const response = denied ?? NextResponse.next();
+      response.cookies.set('__session', newAccessToken, {
+        httpOnly: true,
+        sameSite: 'strict',
+        path: '/',
+        secure: process.env.NODE_ENV === 'production',
+        maxAge: ACCESS_TOKEN_TTL_SECONDS,
+      });
+      if (refreshed.rtCookie) {
+        response.cookies.set('__rt', refreshed.rtCookie, {
           httpOnly: true,
           sameSite: 'strict',
           path: '/',
           secure: process.env.NODE_ENV === 'production',
-          maxAge: ACCESS_TOKEN_TTL_SECONDS,
+          maxAge: REFRESH_TOKEN_TTL_SECONDS,
         });
-        if (refreshed.rtCookie) {
-          response.cookies.set('__rt', refreshed.rtCookie, {
-            httpOnly: true,
-            sameSite: 'strict',
-            path: '/',
-            secure: process.env.NODE_ENV === 'production',
-            maxAge: REFRESH_TOKEN_TTL_SECONDS,
-          });
-        }
-        return response;
-      } catch {
-        // fall through to the redirect/401 below
       }
+      return response;
+    } catch {
+      // fall through to the redirect/401 below
     }
-
-    if (isApi) {
-      return NextResponse.json(
-        { success: false, error: { code: 'AUTH_003', message: 'Unauthorized.' } },
-        { status: 401 },
-      );
-    }
-    return NextResponse.redirect(new URL('/login', request.url));
   }
+
+  if (isApi) {
+    return NextResponse.json(
+      { success: false, error: { code: 'AUTH_003', message: 'Unauthorized.' } },
+      { status: 401 },
+    );
+  }
+  return NextResponse.redirect(new URL('/login', request.url));
 }

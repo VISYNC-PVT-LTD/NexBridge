@@ -94,3 +94,13 @@ class LeaveRequest {
     return null;
   }
 }
+
+/// Human label for an API leave type code (the API returns codes such as
+/// 'paidLeave'; the app used to show them verbatim).
+String leaveTypeLabel(String code) => const {
+      'paidLeave': 'Paid Leave',
+      'sickLeave': 'Sick Leave',
+      'casualLeave': 'Casual Leave',
+      'lwp': 'Leave Without Pay',
+    }[code] ??
+    code;

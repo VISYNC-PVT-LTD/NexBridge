@@ -372,20 +372,30 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
                 loading: () => const SizedBox.shrink(),
                 error: (_, __) => const SizedBox.shrink(),
                 data: (today) {
-                  if (today == null || !today.forgotCheckout) return const SizedBox.shrink();
-                  return Padding(
-                    padding: const EdgeInsets.only(bottom: 12),
-                    child: _MissedCheckoutBanner(
-                      dateString: today.staleSession?.dateString,
-                      onRegularise: () {
-                        final stale = today.staleSession;
-                        final dateStr = stale?.dateString ?? today.date;
-                        final ci = (stale != null && stale.checkInTimestamp.isNotEmpty) ? _isoToHHMM(stale.checkInTimestamp) : null;
-                        final uri = '${RouteNames.regularizationCreate}?type=forgotCheckOut&date=$dateStr'
-                            '${ci != null ? '&checkIn=$ci' : ''}';
-                        context.push(uri);
-                      },
-                    ),
+                  if (today == null) return const SizedBox.shrink();
+                  // One banner per unresolved missed check-out date (there can be several).
+                  final dates = today.missedCheckoutDates;
+                  if (dates.isEmpty) return const SizedBox.shrink();
+                  return Column(
+                    children: [
+                      for (final dateStr in dates)
+                        Padding(
+                          padding: const EdgeInsets.only(bottom: 12),
+                          child: _MissedCheckoutBanner(
+                            dateString: dateStr,
+                            onRegularise: () {
+                              final stale = today.staleSession;
+                              // The check-in time is only known for the stale session's own date.
+                              final ci = (stale != null && stale.dateString == dateStr && stale.checkInTimestamp.isNotEmpty)
+                                  ? _isoToHHMM(stale.checkInTimestamp)
+                                  : null;
+                              final uri = '${RouteNames.regularizationCreate}?type=forgotCheckOut&date=$dateStr'
+                                  '${ci != null ? '&checkIn=$ci' : ''}';
+                              context.push(uri);
+                            },
+                          ),
+                        ),
+                    ],
                   );
                 },
               ),
@@ -899,11 +909,11 @@ class _GpsErrorSheet extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final (title, body, primary, onPrimary) = switch (error) {
-      _GpsError.permissionDenied => ('Location Permission Required', permanent ? "Go to Settings → Permissions → Location and select 'Allow while using app'." : 'This app needs location access to verify your workplace for check-in.', 'Open Settings', () async { await Geolocator.openAppSettings(); if (context.mounted) Navigator.pop(context); }),
-      _GpsError.disabled => ('Location Services Disabled', 'Enable Location Services in your Android settings to check in.', 'Open Location Settings', () async { await Geolocator.openLocationSettings(); if (context.mounted) Navigator.pop(context); }),
+      _GpsError.permissionDenied => ('Location Permission Required', permanent ? "Go to Settings → Permissions → Location and select 'Allow while using app'." : 'This app needs location access to verify your workplace when you check in or out.', 'Open Settings', () async { await Geolocator.openAppSettings(); if (context.mounted) Navigator.pop(context); }),
+      _GpsError.disabled => ('Location Services Disabled', 'Enable Location Services in your Android settings to check in or out.', 'Open Location Settings', () async { await Geolocator.openLocationSettings(); if (context.mounted) Navigator.pop(context); }),
       _GpsError.lowAccuracy => ('Poor GPS Signal', 'GPS accuracy: ${accuracy?.toStringAsFixed(0) ?? '?'}m (need < 100m)\n\nTry: Move near a window, enable Wi-Fi for network location, or wait for GPS signal.', 'Try Again', () => Navigator.pop(context)),
       _GpsError.outsideGeofence => ('Outside Office Location', "You're outside the required office radius. Use 'Request Work Away' if you are working away from the office today.", 'Try Again', () => Navigator.pop(context)),
-      _GpsError.noNetwork => ('No Internet Connection', 'Check-in requires an internet connection to verify your location.', 'Retry', () => Navigator.pop(context)),
+      _GpsError.noNetwork => ('No Internet Connection', 'Checking in or out requires an internet connection to verify your location.', 'Retry', () => Navigator.pop(context)),
     };
 
     return Padding(

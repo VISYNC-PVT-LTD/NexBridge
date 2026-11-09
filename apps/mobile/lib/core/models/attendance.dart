@@ -72,6 +72,9 @@ class TodayAttendance {
   final bool isCheckedIn;
   final bool forgotCheckout;
   final StaleSession? staleSession;
+  /// Every date whose missed check-out is still unresolved (server field
+  /// `unresolvedMissedCheckoutDates`). There can be more than one.
+  final List<String> unresolvedMissedCheckoutDates;
   final String? currentSessionStart;
   /// checkIn + 24 h. At this instant the timer resets to 00:00:00 and the app
   /// re-syncs with the server (the session becomes a missed check-out).
@@ -85,11 +88,22 @@ class TodayAttendance {
     required this.isCheckedIn,
     this.forgotCheckout = false,
     this.staleSession,
+    this.unresolvedMissedCheckoutDates = const [],
     this.currentSessionStart,
     this.currentSessionDeadline,
     required this.sessions,
     required this.totalMinutesToday,
   });
+
+  /// Dates that need a "Missed check-out" banner, oldest first. Uses the full
+  /// server list; falls back to the single stale session for older servers.
+  List<String> get missedCheckoutDates {
+    final dates = {...unresolvedMissedCheckoutDates.where((d) => d.isNotEmpty)};
+    if (dates.isEmpty && forgotCheckout && (staleSession?.dateString.isNotEmpty ?? false)) {
+      dates.add(staleSession!.dateString);
+    }
+    return dates.toList()..sort();
+  }
 
   factory TodayAttendance.fromJson(Map<String, dynamic> json) {
     final staleJson = json['staleSession'] as Map<String, dynamic>?;
@@ -99,6 +113,10 @@ class TodayAttendance {
       isCheckedIn: json['isCheckedIn'] as bool? ?? false,
       forgotCheckout: json['forgotCheckout'] as bool? ?? false,
       staleSession: staleJson != null ? StaleSession.fromJson(staleJson) : null,
+      unresolvedMissedCheckoutDates: (json['unresolvedMissedCheckoutDates'] as List<dynamic>?)
+              ?.whereType<String>()
+              .toList() ??
+          const [],
       currentSessionStart: json['currentSessionStart'] as String?,
       currentSessionDeadline: json['currentSessionDeadline'] as String?,
       sessions: (json['sessions'] as List<dynamic>?)

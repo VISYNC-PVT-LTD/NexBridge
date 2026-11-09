@@ -22,6 +22,7 @@ const PatchBodySchema = z.object({
     startTime:          z.string().regex(TIME_REGEX).optional(),
     endTime:            z.string().regex(TIME_REGEX).optional(),
     gracePeriodMinutes: z.number().int().min(0).max(120).optional(),
+    halfDayLateCheckInTime: z.string().regex(TIME_REGEX, 'Must be HH:MM').optional(),
   }).optional(),
   geofence: z.object({
     enabled:      z.boolean(),
@@ -32,7 +33,11 @@ const PatchBodySchema = z.object({
   workingDays: z.array(z.enum(WEEKDAYS)).min(1).optional(),
   attendanceValidation: z.object({
     mode: z.enum(['geofence', 'officeIp']),
-    allowedOfficeIps: z.array(z.string().ip({ version: 'v4' })).max(20),
+    allowedOfficeIps: z.array(z.string().ip({ version: 'v4', message: 'Each allowed office IP must be a valid IPv4 address.' })).max(20),
+  }).refine((v) => v.mode !== 'officeIp' || v.allowedOfficeIps.length > 0, {
+    // Office-network mode with no allowed IP would refuse EVERY check-in.
+    message: 'Office network mode needs at least one allowed office IP.',
+    path: ['allowedOfficeIps'],
   }).optional(),
   payrollRules: z.object({
     halfDayAggregationCount: z.number().int().min(0).max(31),
@@ -51,6 +56,7 @@ function toShape(s: Awaited<ReturnType<typeof SettingsService.getSettings>>) {
       startTime:          s.workStartTime,
       endTime:            s.workEndTime,
       gracePeriodMinutes: s.lateArrivalGraceMinutes,
+      halfDayLateCheckInTime: s.halfDayLateCheckInTime,
     },
     geofence: {
       lat:          s.geoFence.latitude,
@@ -106,7 +112,7 @@ export async function PATCH(request: NextRequest): Promise<NextResponse> {
   let parsed;
   try { parsed = PatchBodySchema.parse(body); }
   catch (err) {
-    if (err instanceof ZodError) return apiError('GEN_001', 'Validation failed.', 400);
+    if (err instanceof ZodError) return apiError('GEN_001', err.errors[0]?.message ?? 'Validation failed.', 400);
     throw err;
   }
 
@@ -121,16 +127,20 @@ export async function PATCH(request: NextRequest): Promise<NextResponse> {
     if (parsed.shift?.gracePeriodMinutes !== undefined)
       companyUpdate.lateArrivalGraceMinutes = parsed.shift.gracePeriodMinutes;
 
-    if (Object.keys(companyUpdate).length > 0)
-      ops.push(SettingsService.updateCompany(companyUpdate as Parameters<typeof SettingsService.updateCompany>[0]));
-
-    // shift.startTime/endTime go to updateShift
+    // shift.startTime/endTime/halfDayLateCheckInTime go to updateShift. It runs
+    // FIRST (not in parallel): its cross-field validation may refuse the
+    // request, and nothing else (e.g. the grace period) may be half-applied.
     const shiftUpdate: Record<string, unknown> = {};
     if (parsed.shift?.startTime) shiftUpdate.workStartTime = parsed.shift.startTime;
     if (parsed.shift?.endTime)   shiftUpdate.workEndTime   = parsed.shift.endTime;
+    if (parsed.shift?.halfDayLateCheckInTime) shiftUpdate.halfDayLateCheckInTime = parsed.shift.halfDayLateCheckInTime;
 
-    if (Object.keys(shiftUpdate).length > 0)
-      ops.push(SettingsService.updateShift(shiftUpdate as Parameters<typeof SettingsService.updateShift>[0]));
+    const shiftApplied = Object.keys(shiftUpdate).length > 0;
+    if (shiftApplied)
+      await SettingsService.updateShift(shiftUpdate as Parameters<typeof SettingsService.updateShift>[0]);
+
+    if (Object.keys(companyUpdate).length > 0)
+      ops.push(SettingsService.updateCompany(companyUpdate as Parameters<typeof SettingsService.updateCompany>[0]));
 
     if (parsed.geofence)
       ops.push(SettingsService.updateGeofence({
@@ -154,7 +164,7 @@ export async function PATCH(request: NextRequest): Promise<NextResponse> {
         halfDayAggregationCount: parsed.payrollRules.halfDayAggregationCount,
       }));
 
-    if (ops.length === 0) return apiError('GEN_001', 'No updates provided.', 400);
+    if (ops.length === 0 && !shiftApplied) return apiError('GEN_001', 'No updates provided.', 400);
 
     await Promise.all(ops);
 

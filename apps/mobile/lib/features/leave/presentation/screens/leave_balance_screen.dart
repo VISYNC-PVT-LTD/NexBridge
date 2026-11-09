@@ -129,7 +129,7 @@ class _HistoryTab extends ConsumerWidget {
               final l = leaves[i];
               return ListTile(
                 onTap: () => context.push(RouteNames.leaveDetail(l.id)),
-                title: Text(l.leaveType),
+                title: Text(leaveTypeLabel(l.leaveType)),
                 subtitle: Text('${l.startDate.substring(0, 10)} → ${l.endDate.substring(0, 10)} · ${l.days} day${l.days != 1 ? 's' : ''}'),
                 trailing: _StatusChipSmall(status: l.status),
               );

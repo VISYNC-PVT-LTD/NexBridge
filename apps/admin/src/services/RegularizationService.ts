@@ -105,6 +105,28 @@ async function reconcileForSession(
   ).session(session).lean();
   const totalMinutes = sessions.reduce((acc, s) => acc + (s.durationMinutes ?? 0), 0);
 
+  // Weekly-off / holiday / leave days keep their status when work is recorded
+  // on them (same protection as the 24-hour missed-check-out rule and the live
+  // check-out path); only the minutes are updated. Previously an approved
+  // regularization turned e.g. a worked Sunday into 'absent'.
+  const PROTECTED: string[] = ['weekend', 'holiday', 'leave', 'lwp'];
+  const current = await AttendanceDay.findById(attendanceDayId, 'status').session(session).lean() as { status?: string } | null;
+  if (current?.status && PROTECTED.includes(current.status)) {
+    await AttendanceDay.findByIdAndUpdate(
+      attendanceDayId,
+      {
+        $set: {
+          totalMinutes,
+          overtimeMinutes: Math.max(0, totalMinutes - settings.requiredDailyMinutes),
+          isRegularized: true,
+          hasUnresolvedMissedCheckout: false,
+        },
+      },
+      { session },
+    );
+    return current.status;
+  }
+
   const result = computeDayStatus({
     totalMinutes,
     requiredDailyMinutes:    settings.requiredDailyMinutes,
@@ -299,8 +321,61 @@ export class RegularizationService {
         );
         attendanceDayId = dayUpsert!._id as mongoose.Types.ObjectId;
 
-        if (reg.type === 'forgotCheckIn') {
-          // Create synthetic session (closed — past date, no real checkout)
+        if (reg.type === 'forgotCheckIn' && reg.requestedCheckOut) {
+          // The employee stated BOTH times: record exactly that session and
+          // derive the day from real minutes (TC-REG-011: "added as additional
+          // session; cumulative minutes updated"). Previously the requested
+          // check-out was silently dropped and the day forced to 'present'.
+          const checkInTs  = reg.requestedCheckIn ?? dateObj;
+          const checkOutTs = reg.requestedCheckOut;
+          if (checkOutTs.getTime() <= checkInTs.getTime() || checkOutTs.getTime() - checkInTs.getTime() > 24 * 60 * 60 * 1000) {
+            throw new AppError('REG_007', 422, 'Requested check-out must be after the check-in and within 24 hours of it.');
+          }
+          // Never double-count: the interval must not overlap a recorded session.
+          const overlapping = await AttendanceSession.findOne({
+            employeeId: employeeOid,
+            'checkIn.timestamp': { $lt: checkOutTs },
+            $or: [{ isActive: true }, { 'checkOut.timestamp': { $gt: checkInTs } }],
+          }).session(dbSession).lean();
+          if (overlapping) {
+            throw new AppError('REG_008', 409, 'The requested times overlap an attendance session that is already recorded for this employee.');
+          }
+          const durationMins = Math.floor((checkOutTs.getTime() - checkInTs.getTime()) / 60000);
+          const sysId = reg._id.toHexString().slice(-8);
+
+          await AttendanceSession.create(
+            [{
+              employeeId:      employeeOid,
+              attendanceDayId,
+              dateString,
+              checkIn: {
+                timestamp: checkInTs, latitude: 0, longitude: 0, accuracy: 0, distanceFromOffice: 0,
+                deviceFingerprint: 'system-regularization', nonce: `sys-reg-${sysId}`, isWithinGeoFence: true,
+              },
+              checkOut: {
+                timestamp: checkOutTs, latitude: 0, longitude: 0, accuracy: 0, distanceFromOffice: 0,
+                deviceFingerprint: 'system-regularization', nonce: `sys-reg-co-${sysId}`, isWithinGeoFence: true,
+              },
+              durationMinutes:   durationMins,
+              isActive:          false,
+              closedBySystem:    true,
+              systemCloseReason: 'admin-force-close' as const,
+              flags: { lowGpsAccuracy: false, outsideGeoFence: false, suspiciousTimestamp: false, possibleMockGps: false },
+            }],
+            { session: dbSession },
+          );
+
+          updatedDayStatus = await reconcileForSession(employeeOid, dateString, attendanceDayId, settings, dbSession);
+          await AttendanceDay.findByIdAndUpdate(
+            attendanceDayId,
+            { $set: { regularizationRequestId: reg._id } },
+            { session: dbSession },
+          );
+
+        } else if (reg.type === 'forgotCheckIn') {
+          // Only a check-in time was stated: unchanged legacy behaviour —
+          // synthetic closed session without a check-out, day forced present
+          // (no duration exists to derive a status from; see docs/86 open rules).
           const nonce = `sys-reg-${reg._id.toHexString().slice(-8)}`;
           const checkInTs = reg.requestedCheckIn ?? dateObj;
 

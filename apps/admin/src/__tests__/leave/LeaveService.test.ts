@@ -564,6 +564,9 @@ describe('U-LVE-AUTHZ: non-HR-admin roles see only their own leave', () => {
 
   it('super_admin may read any leave (consistent with admin)', async () => {
     mockFindByIdLean(Leave, makeLeave());
-    await expect(LeaveService.getById(LEAVE_ID, ADMIN_ID, 'super_admin')).resolves.toBeDefined();
+    mockFindByIdLean(User, { firstName: 'Asha', lastName: 'Rao' });
+    // The detail view now carries the same employee name the admin list shows
+    // (it previously returned employeeName: null and the portal showed a raw id).
+    await expect(LeaveService.getById(LEAVE_ID, ADMIN_ID, 'super_admin')).resolves.toMatchObject({ employeeName: 'Asha Rao' });
   });
 });

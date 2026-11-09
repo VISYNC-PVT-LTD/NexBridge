@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:intl/intl.dart';
 import '../../../../shared/widgets/app_button.dart';
+import '../../../../shared/widgets/confirm_dialog.dart';
+import '../../../../core/models/leave.dart';
 import '../../../../shared/widgets/error_widget.dart';
 import '../../../../shared/widgets/loading_overlay.dart';
 import '../providers/leave_provider.dart';
@@ -30,7 +32,7 @@ class LeaveDetailScreen extends ConsumerWidget {
                   child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
                     StatusChip(status: leave.status),
                     const SizedBox(height: 12),
-                    _Row(label: 'Type', value: leave.leaveType),
+                    _Row(label: 'Type', value: leaveTypeLabel(leave.leaveType)),
                     _Row(label: 'From', value: fmt.format(DateTime.parse(leave.startDate))),
                     _Row(label: 'To', value: fmt.format(DateTime.parse(leave.endDate))),
                     _Row(label: 'Days', value: '${leave.days}'),
@@ -90,16 +92,11 @@ class _CancelButtonState extends ConsumerState<_CancelButton> {
       loading: _loading,
       onPressed: () async {
         final messenger = ScaffoldMessenger.of(context);
-        final confirm = await showDialog<bool>(
-          context: context,
-          builder: (_) => AlertDialog(
-            title: const Text('Cancel Leave?'),
-            content: const Text('Are you sure you want to cancel this leave request?'),
-            actions: [
-              TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('No')),
-              TextButton(onPressed: () => Navigator.pop(context, true), child: const Text('Yes, Cancel')),
-            ],
-          ),
+        final confirm = await showConfirmDialog(
+          context,
+          title: 'Cancel Leave?',
+          message: 'Are you sure you want to cancel this leave request?',
+          confirmLabel: 'Yes, Cancel',
         );
         if (confirm != true) return;
         setState(() => _loading = true);

@@ -13,6 +13,10 @@ import type { Settings } from '@/types/api';
 const schema = z.object({
   mode: z.enum(['geofence', 'officeIp']),
   allowedOfficeIps: z.array(z.string()).max(20),
+}).refine((v) => v.mode !== 'officeIp' || v.allowedOfficeIps.length > 0, {
+  // Same rule as PATCH /api/v1/settings: no allowed IP would block every check-in.
+  message: 'Add at least one allowed office IP before saving office network mode.',
+  path: ['allowedOfficeIps'],
 });
 type Form = z.infer<typeof schema>;
 
@@ -23,7 +27,7 @@ export default function SettingsAttendanceValidationForm({ settings, onSuccess }
   const [newIp, setNewIp] = useState('');
   const [detecting, setDetecting] = useState(false);
 
-  const { register, handleSubmit, reset, control, setValue, watch } = useForm<Form>({
+  const { register, handleSubmit, reset, control, setValue, watch, formState: { errors } } = useForm<Form>({
     resolver: zodResolver(schema),
     defaultValues: {
       mode: settings?.attendanceValidation?.mode ?? 'geofence',
@@ -48,7 +52,7 @@ export default function SettingsAttendanceValidationForm({ settings, onSuccess }
     const ipv4 = /^(\d{1,3}\.){3}\d{1,3}$/;
     if (!ipv4.test(trimmed)) { toast.error('Enter a valid IPv4 address'); return; }
     if (ips.includes(trimmed)) { toast.error('IP already in list'); return; }
-    setValue('allowedOfficeIps', [...ips, trimmed]);
+    setValue('allowedOfficeIps', [...ips, trimmed], { shouldValidate: true });
     setNewIp('');
   };
 
@@ -79,10 +83,12 @@ export default function SettingsAttendanceValidationForm({ settings, onSuccess }
   const onSubmit = async (data: Form) => {
     setSubmitting(true);
     try {
-      await apiFetch('/api/v1/settings', {
+      // apiFetch resolves with the error body on non-2xx, so check `success`.
+      const res = await apiFetch<{ success: boolean; error?: { message?: string } }>('/api/v1/settings', {
         method: 'PATCH',
         body: JSON.stringify({ attendanceValidation: data }),
       });
+      if (!res?.success) { toast.error(res?.error?.message ?? 'Failed to update settings'); return; }
       toast.success('Attendance validation settings updated');
       onSuccess?.();
     } catch { toast.error('Failed to update settings'); }
@@ -118,6 +124,9 @@ export default function SettingsAttendanceValidationForm({ settings, onSuccess }
           <div className="space-y-1 mb-2">
             {ips.length === 0 && (
               <p className="text-xs text-red-600">No IPs configured — all check-ins will be blocked in this mode.</p>
+            )}
+            {errors.allowedOfficeIps?.message && (
+              <p role="alert" className="text-xs font-medium text-red-600">{errors.allowedOfficeIps.message}</p>
             )}
             {ips.map(ip => (
               <div key={ip} className="flex items-center gap-2 bg-gray-50 rounded px-3 py-1.5">
