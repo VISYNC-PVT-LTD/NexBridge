@@ -215,7 +215,7 @@ NEXT_PUBLIC_APP_URL=https://genesis-workforce.vercel.app
 | Variable | Required | Default | Source |
 |----------|----------|---------|--------|
 | `SEED_ADMIN_EMAIL` | YES (for seed) | `admin@genesis.com` | `scripts/seed-admin.ts:12` |
-| `SEED_ADMIN_PASSWORD` | YES (for seed) | `Admin@123456` | `scripts/seed-admin.ts:13` |
+| `SEED_ADMIN_PASSWORD` | YES (for seed) | **none** — script refuses if unset, <12 chars, <3 character classes or a known default *(changed 2026-11-08; the former hard-coded default must be treated as compromised)* | `scripts/seed-admin.ts` |
 | `SEED_ADMIN_EMPLOYEE_ID` | Optional | `EMP001` | `scripts/seed-admin.ts:14` |
 | `SEED_ADMIN_FIRST_NAME` | Optional | `Super` | `scripts/seed-admin.ts:15` |
 | `SEED_ADMIN_LAST_NAME` | Optional | `Admin` | `scripts/seed-admin.ts:16` |

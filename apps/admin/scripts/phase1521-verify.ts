@@ -15,6 +15,10 @@ import { AuditLog } from '../src/models/AuditLog';
 import { DeviceSession } from '../src/models/DeviceSession';
 import { getAppUrl } from '../src/lib/utils/app-url';
 
+// Never hard-code credentials. Supply the test admin password via the environment.
+const VERIFY_ADMIN_PASSWORD = process.env.VERIFY_ADMIN_PASSWORD ?? '';
+if (!VERIFY_ADMIN_PASSWORD) throw new Error('VERIFY_ADMIN_PASSWORD is not set.');
+
 const BASE = 'http://localhost:3000';
 
 const KNOWN_RAW_TOKEN = 'e'.repeat(64);
@@ -126,7 +130,7 @@ async function run() {
   // ── ADMIN LOGIN ───────────────────────────────────────────────────────────────
   section('ADMIN LOGIN');
   const { res: loginRes, body: loginBody, accessToken: adminToken } = await loginAs(
-    'admin@genesis.com', 'Admin@123456', '',  // call 1 of IP_FLOW
+    'admin@genesis.com', VERIFY_ADMIN_PASSWORD, '',  // call 1 of IP_FLOW
   );
   log('Admin login → 200', loginRes.status === 200, `HTTP ${loginRes.status}`);
   log('Access token issued', !!adminToken);
@@ -384,7 +388,7 @@ async function run() {
   currentIp = IP_REFRESH;
   section('TOKEN REFRESH');
 
-  const { body: freshLogin } = await loginAs('admin@genesis.com', 'Admin@123456', '');  // call 1 of IP_REFRESH
+  const { body: freshLogin } = await loginAs('admin@genesis.com', VERIFY_ADMIN_PASSWORD, '');  // call 1 of IP_REFRESH
   const { res: refreshRes, body: refreshBody } = await post('/api/v1/auth/refresh', {
     refreshToken: freshLogin.data?.refreshToken,
     sessionId: freshLogin.data?.sessionId,
