@@ -63,7 +63,7 @@ class AuthNotifier extends StateNotifier<AuthState> {
       // Register FCM token after successful login (non-blocking)
       _fcm.registerToken();
       return result;
-    } catch (e, _) {
+    } catch (e) {
       state = state.copyWith(isLoading: false, error: e.toString());
       rethrow;
     }

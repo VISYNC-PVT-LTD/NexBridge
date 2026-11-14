@@ -80,7 +80,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
     } on AuthException catch (e) {
       if (!mounted) return;
       setState(() => _errorMessage = _mapErrorCode(e.code));
-    } catch (e, _) {
+    } catch (e) {
       if (!mounted) return;
       setState(() => _errorMessage = 'No connection. Check your network.');
     } finally {
