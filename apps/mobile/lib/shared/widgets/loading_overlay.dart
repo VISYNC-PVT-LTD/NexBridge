@@ -101,6 +101,8 @@ class StatusChip extends StatelessWidget {
     'approved' => (const Color(0xFFDCFCE7), const Color(0xFF15803D), 'Approved'),
     'rejected' => (const Color(0xFFFEE2E2), const Color(0xFFB91C1C), 'Rejected'),
     'cancelled' => (const Color(0xFFF3F4F6), const Color(0xFF6B7280), 'Cancelled'),
+    'withdrawn' => (const Color(0xFFF3F4F6), const Color(0xFF6B7280), 'Withdrawn'),
+    'revoked' => (const Color(0xFFFFEDD5), const Color(0xFFC2410C), 'Revoked'),
     'finalised' || 'finalized' => (const Color(0xFFDCFCE7), const Color(0xFF15803D), 'Finalised'),
     'draft' => (const Color(0xFFF3F4F6), const Color(0xFF374151), 'Draft'),
     _ => (const Color(0xFFF3F4F6), const Color(0xFF374151), status),

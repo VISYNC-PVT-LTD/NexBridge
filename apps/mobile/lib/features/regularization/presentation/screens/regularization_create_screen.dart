@@ -69,7 +69,8 @@ class _RegularizationCreateScreenState extends ConsumerState<RegularizationCreat
       firstDate: DateTime.now().subtract(const Duration(days: 30)),
       lastDate: DateTime.now(),
     );
-    if (picked != null) setState(() => _date = picked);
+    // A validation message about a field the user has just changed is stale.
+    if (picked != null) setState(() { _date = picked; _error = null; });
   }
 
   Future<void> _pickTime(bool isCheckIn) async {
@@ -78,6 +79,7 @@ class _RegularizationCreateScreenState extends ConsumerState<RegularizationCreat
     if (picked == null) return;
     setState(() {
       if (isCheckIn) { _checkIn = picked; } else { _checkOut = picked; }
+      _error = null;
     });
   }
 
@@ -178,6 +180,7 @@ class _RegularizationCreateScreenState extends ConsumerState<RegularizationCreat
                   _type = v!;
                   if (!_needsCheckIn.contains(_type)) _checkIn = null;
                   if (!_needsCheckOut.contains(_type)) _checkOut = null;
+                  _error = null;
                 }),
               ),
             const SizedBox(height: 16),
@@ -220,6 +223,7 @@ class _RegularizationCreateScreenState extends ConsumerState<RegularizationCreat
               controller: _reasonCtrl,
               maxLines: 3,
               decoration: const InputDecoration(hintText: 'Explain why you need regularization…'),
+              onChanged: (_) { if (_error != null) setState(() => _error = null); },
             ),
             const SizedBox(height: 24),
             AppButton(label: 'Submit Request', onPressed: _submit, loading: _loading),

@@ -12,6 +12,7 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach, jest } from '@jest/globals';
 import net from 'net';
 import mongoose from 'mongoose';
+import { stampHeartbeatsWithRealClock } from './real-clock-heartbeat';
 
 const BIN = process.env.MONGOMS_SYSTEM_BINARY;
 const suite = BIN || process.env.RUN_DB_INTEGRATION === '1' ? describe : describe.skip;
@@ -60,6 +61,7 @@ suite('forgotCheckIn approval with a stated check-out (real DB)', () => {
       instanceOpts: [{ port, ip: '127.0.0.1' }],
     });
     await mongoose.connect(rs.getUri(), { dbName: 'genesis-reg-forgot-checkin-test' });
+    stampHeartbeatsWithRealClock();
     M = {
       User: (await import('@models/User')).User,
       Employee: (await import('@models/Employee')).Employee,

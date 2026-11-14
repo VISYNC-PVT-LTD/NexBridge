@@ -50,6 +50,7 @@ class _LeaveApplyScreenState extends ConsumerState<LeaveApplyScreen> {
       } else {
         _endDate = picked;
       }
+      _error = null; // a message about the field just changed is stale
     });
   }
 
@@ -100,7 +101,7 @@ class _LeaveApplyScreenState extends ConsumerState<LeaveApplyScreen> {
               value: _leaveType,
               decoration: const InputDecoration(),
               items: _types.map((t) => DropdownMenuItem(value: t.$1, child: Text(t.$2))).toList(),
-              onChanged: (v) => setState(() => _leaveType = v!),
+              onChanged: (v) => setState(() { _leaveType = v!; _error = null; }),
             ),
             const SizedBox(height: 16),
 
@@ -142,6 +143,7 @@ class _LeaveApplyScreenState extends ConsumerState<LeaveApplyScreen> {
               controller: _reasonCtrl,
               maxLines: 3,
               decoration: const InputDecoration(hintText: 'Enter reason for leave...'),
+              onChanged: (_) { if (_error != null) setState(() => _error = null); },
             ),
             const SizedBox(height: 24),
 

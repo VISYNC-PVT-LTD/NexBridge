@@ -440,9 +440,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
                 const SizedBox(width: 12),
                 Expanded(child: OutlinedButton(onPressed: () => context.push(RouteNames.regularization), child: const Text('My Reg.'))),
               ]),
-
-              const SizedBox(height: 20),
-              _MonthSummary(today: attendanceAsync.asData?.value),
+              // "This Month" summary card intentionally removed: it showed
+              // hard-coded placeholders ("—", "WFH 0") and was never wired to
+              // data. Re-introduce it only with a real monthly-summary source.
             ],
           ),
         ),
@@ -818,52 +818,6 @@ class _TodaysSessions extends StatelessWidget {
       final dt = DateTime.parse(iso).toLocal();
       return '${dt.hour.toString().padLeft(2, '0')}:${dt.minute.toString().padLeft(2, '0')}';
     } catch (_) { return iso; }
-  }
-}
-
-// ─── Month summary ────────────────────────────────────────────────────────────
-
-class _MonthSummary extends StatelessWidget {
-  const _MonthSummary({this.today});
-  final TodayAttendance? today;
-
-  @override
-  Widget build(BuildContext context) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text('This Month', style: Theme.of(context).textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w600)),
-        const SizedBox(height: 8),
-        Card(
-          child: Padding(
-            padding: const EdgeInsets.all(16),
-            child: Row(
-              mainAxisAlignment: MainAxisAlignment.spaceAround,
-              children: const [
-                _SummaryItem(label: 'Present', value: '—'),
-                _SummaryItem(label: 'Leave', value: '—'),
-                _SummaryItem(label: 'Absent', value: '—'),
-                _SummaryItem(label: 'WFH', value: '0'),
-              ],
-            ),
-          ),
-        ),
-      ],
-    );
-  }
-}
-
-class _SummaryItem extends StatelessWidget {
-  const _SummaryItem({required this.label, required this.value});
-  final String label;
-  final String value;
-
-  @override
-  Widget build(BuildContext context) {
-    return Column(children: [
-      Text(value, style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
-      Text(label, style: const TextStyle(fontSize: 12, color: Colors.grey)),
-    ]);
   }
 }
 

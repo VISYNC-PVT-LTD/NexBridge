@@ -32,7 +32,13 @@ jobs:
       # guard blocks all downloads during the run.
       - name: Prefetch MongoDB binary for isolated integration tests
         run: node -e "require('mongodb-memory-server').MongoMemoryReplSet.create({replSet:{count:1}}).then(r=>r.stop())"
-      - name: Test (isolated — mocked integrations + throw-away replica set, network blocked)
-        run: npm run test:ci
+      - name: Unit tests (isolated — mocked integrations, network blocked, parallel)
+        run: npm run test:ci:unit
+      # Each real-DB suite starts its own throw-away mongod replica set. Started
+      # in parallel they compete for memory and can miss mongodb-memory-server's
+      # startup timeout ("Instance failed to start within 10000ms"), so they run
+      # one at a time. Nothing is skipped: RUN_DB_INTEGRATION=1 enables them all.
+      - name: Real-DB integration tests (throw-away replica set, sequential)
+        run: npm run test:ci:db
         env:
           RUN_DB_INTEGRATION: '1'

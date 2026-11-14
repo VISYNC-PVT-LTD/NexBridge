@@ -12,6 +12,7 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach, jest } from '@jest/globals';
 import net from 'net';
 import mongoose from 'mongoose';
+import { stampHeartbeatsWithRealClock } from './real-clock-heartbeat';
 import { createHash } from 'crypto';
 
 const BIN = process.env.MONGOMS_SYSTEM_BINARY;
@@ -65,6 +66,7 @@ suite('24-hour missed check-out (real DB, controlled clock)', () => {
       instanceOpts: [{ port, ip: '127.0.0.1' }],
     });
     await mongoose.connect(rs.getUri(), { dbName: 'genesis-missed-checkout-test' });
+    stampHeartbeatsWithRealClock();
     M = {
       User: (await import('@models/User')).User,
       Employee: (await import('@models/Employee')).Employee,

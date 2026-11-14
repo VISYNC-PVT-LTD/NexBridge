@@ -1,3 +1,5 @@
+import 'package:intl/intl.dart';
+
 class RegularizationRequest {
   final String id;
   final String employeeId;
@@ -60,4 +62,25 @@ class RegularizationRequest {
     if (value is Map) return value['_id'] as String?;
     return null;
   }
+}
+
+/// Readable label for an API regularization type. The list and detail
+/// screens used to show the raw code upper-cased (e.g. "CLIENTVISIT").
+/// Same labels as the create screen.
+const regularizationTypeLabels = <String, String>{
+  'forgotCheckIn': 'Forgot Check-In',
+  'forgotCheckOut': 'Forgot Check-Out',
+  'workAwayFromOffice': 'Work Away From Office',
+  'officialTravel': 'Official Travel',
+  'clientVisit': 'Client Visit',
+};
+
+String regularizationTypeLabel(String type) => regularizationTypeLabels[type] ?? type;
+
+/// Requested check-in/check-out instants are ISO-8601 UTC strings; show them
+/// in the phone's local time (e.g. "08 Nov, 18:30") instead of the raw value.
+String formatRequestedTime(String iso) {
+  final t = DateTime.tryParse(iso);
+  if (t == null) return iso;
+  return DateFormat('dd MMM, HH:mm').format(t.toLocal());
 }

@@ -36,7 +36,7 @@ class RegularizationScreen extends ConsumerWidget {
                 return ListTile(
                   onTap: () => context.push(RouteNames.regularizationDetail(r.id)),
                   title: Text(date != null ? DateFormat('dd MMM yyyy').format(date) : r.date),
-                  subtitle: Text(r.type.replaceAll('_', ' ').toUpperCase()),
+                  subtitle: Text(regularizationTypeLabel(r.type)),
                   trailing: StatusChip(status: r.status),
                 );
               },

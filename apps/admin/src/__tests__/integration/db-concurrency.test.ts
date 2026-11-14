@@ -12,6 +12,7 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach, jest } from '@jest/globals';
 import net from 'net';
 import mongoose from 'mongoose';
+import { stampHeartbeatsWithRealClock } from './real-clock-heartbeat';
 import bcrypt from 'bcryptjs';
 import { createHash, randomBytes } from 'crypto';
 
@@ -63,6 +64,7 @@ suite('integration (isolated in-memory replica set)', () => {
       instanceOpts: [{ port, ip: '127.0.0.1' }],
     });
     await mongoose.connect(rs.getUri(), { dbName: 'genesis-integration-test' });
+    stampHeartbeatsWithRealClock();
 
     M = {
       User: (await import('@models/User')).User,
