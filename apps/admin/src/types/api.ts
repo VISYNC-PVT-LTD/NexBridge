@@ -66,6 +66,9 @@ export interface RegularizationRequest {
   status: RegularizationStatus;
   requestedCheckIn?: string;
   requestedCheckOut?: string;
+  /** Display-only, company timezone (e.g. "12 Nov 2026, 09:00"). */
+  requestedCheckInLocal?: string | null;
+  requestedCheckOutLocal?: string | null;
   reviewedBy?: string | Employee;
   reviewedAt?: string;
   reviewRemark?: string;

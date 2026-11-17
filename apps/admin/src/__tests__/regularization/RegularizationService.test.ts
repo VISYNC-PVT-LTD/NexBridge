@@ -66,6 +66,7 @@ function makeReg(overrides: Record<string, unknown> = {}) {
 }
 
 const employeePayload = { userId: EMP_ID, role: 'employee' as const, email: 'e@e.com', iat: 0, exp: 9999999999 };
+const adminPayload    = { ...employeePayload, userId: ADMIN_ID, role: 'admin' as const };
 
 // ─── Setup ────────────────────────────────────────────────────────────────────
 
@@ -460,6 +461,43 @@ describe('U-REG-11', () => {
     // API contract: formatReg() returns `_id` (consumed as `_id` by the mobile
     // RegularizationRequest model and the admin portal list page).
     expect(result._id).toBe(REG_ID);
+  });
+
+  // Regression (portal detail page showed a raw ObjectId and raw UTC ISO times):
+  // getById returns the employee name stub, like list(), and the requested
+  // times formatted in the COMPANY timezone.
+  it('returns the employee name and company-timezone requested times', async () => {
+    jest.spyOn(Regularization, 'findById').mockReturnValue({
+      lean: jest.fn().mockResolvedValue(makeReg({
+        requestedCheckIn:  new Date('2026-11-12T03:30:00.000Z'), // 09:00 IST
+        requestedCheckOut: new Date('2026-11-12T12:30:00.000Z'), // 18:00 IST
+      })),
+    } as unknown as ReturnType<typeof Regularization.findById>);
+    jest.spyOn(User, 'findById').mockReturnValue({
+      lean: jest.fn().mockResolvedValue({ _id: EMP_OID, firstName: 'Test', lastName: 'Employee A' }),
+    } as unknown as ReturnType<typeof User.findById>);
+    jest.spyOn(CompanySettings, 'findById').mockReturnValue({
+      lean: jest.fn().mockResolvedValue({ ...makeSettings(), timezone: 'Asia/Kolkata' }),
+    } as unknown as ReturnType<typeof CompanySettings.findById>);
+
+    const result = await RegularizationService.getById(REG_ID, adminPayload);
+
+    expect(result.employeeId).toEqual({ _id: EMP_OID.toHexString(), firstName: 'Test', lastName: 'Employee A' });
+    expect(result.requestedCheckIn).toBe('2026-11-12T03:30:00.000Z'); // raw value unchanged (mobile contract)
+    expect(result.requestedCheckInLocal).toBe('12 Nov 2026, 09:00');
+    expect(result.requestedCheckOutLocal).toBe('12 Nov 2026, 18:00');
+  });
+
+  it('falls back to the raw employee id and null local times when absent', async () => {
+    jest.spyOn(Regularization, 'findById').mockReturnValue({
+      lean: jest.fn().mockResolvedValue(makeReg({ type: 'clientVisit' })),
+    } as unknown as ReturnType<typeof Regularization.findById>);
+
+    const result = await RegularizationService.getById(REG_ID, adminPayload);
+
+    expect(result.employeeId).toBe(EMP_OID.toHexString());
+    expect(result.requestedCheckInLocal).toBeNull();
+    expect(result.requestedCheckOutLocal).toBeNull();
   });
 
   it('throws 403 when employee fetches another employee request', async () => {

@@ -35,7 +35,10 @@ export function clearSessionCredentials() {
 
 export async function tryRefresh(): Promise<boolean> {
   if (refreshing) return refreshing;
-  if (!_refreshToken || !_sessionId) return false;
+  // Always ask the server, even with no sessionStorage copy: a new tab or a
+  // reopened browser has an empty sessionStorage but may still hold the
+  // HttpOnly __rt cookie (invisible to JS). Without a valid cookie the server
+  // answers 401 and nothing is stored. Same-origin only (enforced server-side).
   refreshing = (async () => {
     try {
       const res = await fetch('/api/v1/auth/refresh', {
@@ -48,11 +51,13 @@ export async function tryRefresh(): Promise<boolean> {
         body: JSON.stringify({}),
       });
       if (!res.ok) return false;
-      const json = (await res.json()) as { data?: { accessToken?: string; refreshToken?: string } };
+      const json = (await res.json()) as { data?: { accessToken?: string; refreshToken?: string; sessionId?: string } };
       if (json.data?.accessToken) {
         accessToken = json.data.accessToken;
-        // Refresh tokens rotate on every refresh — keep the new one.
-        if (json.data.refreshToken && _sessionId) setSessionCredentials(json.data.refreshToken, _sessionId);
+        // Refresh tokens rotate on every refresh — keep the new one. The server
+        // returns the sessionId so a cookie-restored tab knows its session too.
+        const sid = json.data.sessionId ?? _sessionId;
+        if (json.data.refreshToken && sid) setSessionCredentials(json.data.refreshToken, sid);
         return true;
       }
       return false;

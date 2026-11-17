@@ -113,6 +113,29 @@ changes payroll. The silent leave overwrite can produce a day that is both
 
 ---
 
+## Q4. Which "required daily minutes" is authoritative? (added 2026-11-17)
+
+Two different numbers are in use today:
+
+| Where | Value used | Source |
+|---|---|---|
+| Day status (present / half-day / absent), overtime, payroll, leave revert | stored `requiredDailyMinutes` (seed default 480 = 8 h) | `AttendanceService`, `LeaveService` |
+| Mobile Home card "Required: … today" | shift span `workEndTime − workStartTime` (09:00–18:00 = 540 = 9 h) | `GET /attendance/shift` (comment: "stored value is not authoritative") |
+
+So an employee can be told 9 h is required while 8 h already counts as
+present. Options: (a) the shift endpoint returns the stored value; (b) status
+and payroll use the shift span; (c) keep both but label the card "Shift
+length". **Not changed** — it decides who is present and paid.
+
+## Q5. Half-day leave from the mobile app (added 2026-11-17)
+
+The API supports half-day leave (`duration: "half"` + `halfDayPeriod`,
+`totalDays` 0.5) and the app now *displays* 0.5-day leaves and fractional
+balances correctly, but the app has **no way to request** a half day. Whether
+employees should be able to is a product decision (a new input, not a fix).
+The app's date-range preview is labelled as calendar days ("weekends and
+holidays are not deducted"); the server computes the working days charged.
+
 ## What was verified, and how
 
 | Item | Evidence |

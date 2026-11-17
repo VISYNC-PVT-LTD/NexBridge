@@ -1,5 +1,5 @@
 import mongoose from 'mongoose';
-import { toZonedTime } from 'date-fns-tz';
+import { toZonedTime, formatInTimeZone } from 'date-fns-tz';
 import { connectDB } from '@lib/db/connect';
 import { AppError } from '@services/AuthService';
 import { Regularization } from '@models/Regularization';
@@ -23,9 +23,16 @@ import { isAttendanceAdmin } from '@mw/requireRole';
 
 type EmployeeStub = { _id: string; firstName: string; lastName: string } | null;
 
+/** Requested instant in the company timezone, e.g. "12 Nov 2026, 09:00" (display only). */
+function localTime(d: Date | undefined | null, timezone: string | undefined): string | null {
+  if (!d || !timezone) return null;
+  return formatInTimeZone(d, timezone, 'dd MMM yyyy, HH:mm');
+}
+
 function formatReg(
   reg: IRegularization & { _id: mongoose.Types.ObjectId },
   employeeStub?: EmployeeStub,
+  timezone?: string,
 ) {
   return {
     _id:               reg._id.toHexString(),
@@ -34,6 +41,9 @@ function formatReg(
     type:              reg.type,
     requestedCheckIn:  reg.requestedCheckIn?.toISOString() ?? null,
     requestedCheckOut: reg.requestedCheckOut?.toISOString() ?? null,
+    // Additive, display-only: the raw ISO values above stay the API contract.
+    requestedCheckInLocal:  localTime(reg.requestedCheckIn, timezone),
+    requestedCheckOutLocal: localTime(reg.requestedCheckOut, timezone),
     reason:            reg.reason,
     status:            reg.status,
     reviewedBy:        reg.reviewedBy?.toHexString() ?? null,
@@ -674,7 +684,13 @@ export class RegularizationService {
       }
     }
 
-    return formatReg(reg);
+    // Same employee name stub as list(); timezone for display-only local times.
+    const [u, settings] = await Promise.all([
+      User.findById(reg.employeeId, '_id firstName lastName').lean() as Promise<{ _id: mongoose.Types.ObjectId; firstName: string; lastName: string } | null>,
+      CompanySettings.findById('company-settings').lean() as Promise<ICompanySettings | null>,
+    ]);
+    const stub: EmployeeStub = u ? { _id: u._id.toHexString(), firstName: u.firstName, lastName: u.lastName } : null;
+    return formatReg(reg, stub ?? undefined, settings?.timezone);
   }
 
   // ─── List ─────────────────────────────────────────────────────────────────────

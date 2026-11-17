@@ -2,6 +2,7 @@ import 'package:dio/dio.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:genesis_workforce/core/models/leave.dart';
 import 'package:genesis_workforce/features/leave/data/sources/leave_remote_source.dart';
+import 'package:genesis_workforce/features/leave/presentation/screens/leave_apply_screen.dart';
 
 // Regression (found on a real phone against the local API): the app sent
 // leaveType 'PL'/'SL'/'CL'/'LWP' without `duration`, every application was
@@ -51,5 +52,14 @@ void main() {
       expect(leaveTypeLabel('lwp'), 'Leave Without Pay');
     });
     test('unknown codes are shown as-is', () => expect(leaveTypeLabel('compOff'), 'compOff'));
+  });
+
+  // Regression: Fri→Mon previewed as "4 days" although the server deducts 2
+  // (weekends/holidays excluded). The preview must not claim the charge.
+  group('leaveSpanLabel', () {
+    test('labels calendar days, never a deduction', () {
+      expect(leaveSpanLabel(4), '4 calendar days selected · weekends and holidays are not deducted');
+      expect(leaveSpanLabel(1), '1 calendar day selected · weekends and holidays are not deducted');
+    });
   });
 }

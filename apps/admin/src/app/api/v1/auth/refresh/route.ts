@@ -56,7 +56,9 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
       ip,
       request.headers.get('user-agent') ?? '',
     );
-    const res = success(result);
+    // sessionId is echoed so a cookie-restored browser tab knows its session
+    // (it is not a credential on its own; the refresh token is).
+    const res = success({ ...result, sessionId: parsed.sessionId });
     // Rotate __session cookie so Edge Middleware continues to accept page-route requests
     res.cookies.set('__session', result.accessToken, {
       httpOnly: true,

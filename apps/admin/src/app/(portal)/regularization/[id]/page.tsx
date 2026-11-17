@@ -66,8 +66,8 @@ export default function RegularizationDetailPage() {
             <Row label="Type"       value={TYPE_LABELS[reg.type] ?? reg.type} />
             <Row label="Reason"     value={reg.reason} />
             <Row label="Status"     value={<StatusBadge status={reg.status} />} />
-            {reg.requestedCheckIn  && <Row label="Requested Check-in"  value={reg.requestedCheckIn} />}
-            {reg.requestedCheckOut && <Row label="Requested Check-out" value={reg.requestedCheckOut} />}
+            {reg.requestedCheckIn  && <Row label="Requested Check-in"  value={reg.requestedCheckInLocal  ?? reg.requestedCheckIn} />}
+            {reg.requestedCheckOut && <Row label="Requested Check-out" value={reg.requestedCheckOutLocal ?? reg.requestedCheckOut} />}
             {reg.reviewedAt        && <Row label="Reviewed At"         value={format(parseISO(reg.reviewedAt), 'dd MMM yyyy HH:mm')} />}
             {reg.reviewRemark      && <Row label="Remark"              value={reg.reviewRemark} />}
             <Row label="Submitted" value={format(parseISO(reg.createdAt), 'dd MMM yyyy')} />

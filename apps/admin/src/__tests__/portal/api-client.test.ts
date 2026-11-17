@@ -168,3 +168,40 @@ describe('apiFetchBlob', () => {
     await expect(apiFetchBlob('/api/v1/export')).rejects.toBeDefined();
   });
 });
+
+// Regression: a new tab (or a reopened browser) has an empty sessionStorage but a
+// valid HttpOnly __rt cookie. tryRefresh() used to return false without asking
+// the server, so the portal bounced a signed-in admin to /login.
+describe('tryRefresh — cookie-based restore (new tab)', () => {
+  let tryRefresh: () => Promise<boolean>;
+  let getSessionId: () => string | null;
+
+  beforeEach(() => {
+    ({ tryRefresh, getSessionId } = require('@lib/utils/api-client'));
+  });
+
+  it('asks the server (same-origin cookie, empty body) even without stored credentials', async () => {
+    (global.fetch as jest.Mock).mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: () => Promise.resolve({ success: true, data: { accessToken: 'new-at', refreshToken: 'new-rt', sessionId: 'sid-1' } }),
+    });
+
+    await expect(tryRefresh()).resolves.toBe(true);
+
+    const [url, init] = (global.fetch as jest.Mock).mock.calls[0] as [string, RequestInit];
+    expect(url).toBe('/api/v1/auth/refresh');
+    expect(init.credentials).toBe('include');
+    expect(init.body).toBe('{}');
+    expect(getAccessToken()).toBe('new-at');
+    expect(getSessionId()).toBe('sid-1');
+  });
+
+  it('returns false and stores nothing when there is no valid cookie', async () => {
+    (global.fetch as jest.Mock).mockResolvedValue({ ok: false, status: 401, json: () => Promise.resolve({ success: false }) });
+
+    await expect(tryRefresh()).resolves.toBe(false);
+    expect(getAccessToken()).toBeNull();
+    expect(getSessionId()).toBeNull();
+  });
+});

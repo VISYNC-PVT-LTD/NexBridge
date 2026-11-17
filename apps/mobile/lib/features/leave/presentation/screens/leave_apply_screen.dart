@@ -6,6 +6,15 @@ import '../../../../shared/widgets/app_button.dart';
 import '../providers/leave_provider.dart';
 import '../../data/sources/leave_remote_source.dart';
 
+
+/// Preview of the selected date range. The server deducts only working days
+/// (weekends and holidays are excluded, BR-LVE-01), which the app cannot know
+/// in advance — so the span is labelled as calendar days, not as the charge.
+String leaveSpanLabel(int calendarDays) {
+  final unit = calendarDays == 1 ? 'calendar day' : 'calendar days';
+  return '$calendarDays $unit selected · weekends and holidays are not deducted';
+}
+
 class LeaveApplyScreen extends ConsumerStatefulWidget {
   const LeaveApplyScreen({super.key});
 
@@ -133,7 +142,7 @@ class _LeaveApplyScreenState extends ConsumerState<LeaveApplyScreen> {
 
             if (_days > 0) ...[
               const SizedBox(height: 8),
-              Text('$_days day${_days != 1 ? 's' : ''}', style: const TextStyle(color: Color(0xFF2563EB), fontWeight: FontWeight.w500)),
+              Text(leaveSpanLabel(_days), style: const TextStyle(color: Color(0xFF2563EB), fontWeight: FontWeight.w500)),
             ],
             const SizedBox(height: 16),
 

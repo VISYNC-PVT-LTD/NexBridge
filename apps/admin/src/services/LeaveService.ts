@@ -86,6 +86,19 @@ function formatLeave(leave: ILeave & { _id: mongoose.Types.ObjectId }, employeeN
 
 // ─── Service ─────────────────────────────────────────────────────────────────
 
+/** Balance figures for one leave type; an expired carry-forward counts as 0. */
+function formatTypeBalance(bal: ILeaveTypeBalance | undefined, now: Date) {
+  const currentYear = bal?.currentYear ?? 0;
+  const cfValid     = !!bal?.carryForwardExpiry && bal.carryForwardExpiry > now;
+  const cf          = cfValid ? (bal?.carriedForward ?? 0) : 0;
+  return {
+    currentYear,
+    carriedForward:     cf,
+    carryForwardExpiry: bal?.carryForwardExpiry?.toISOString().slice(0, 10) ?? null,
+    total:              currentYear + cf,
+  };
+}
+
 export class LeaveService {
 
   // ─── Apply ──────────────────────────────────────────────────────────────────
@@ -844,23 +857,58 @@ export class LeaveService {
 
     const now   = new Date();
     const { leaveBalances } = user;
-
-    function fmt(bal: ILeaveTypeBalance) {
-      const cfValid = bal.carryForwardExpiry && bal.carryForwardExpiry > now;
-      const cf      = cfValid ? bal.carriedForward : 0;
-      return {
-        currentYear:        bal.currentYear,
-        carriedForward:     cf,
-        carryForwardExpiry: bal.carryForwardExpiry?.toISOString().slice(0, 10) ?? null,
-        total:              bal.currentYear + cf,
-      };
-    }
+    const fmt = (bal: ILeaveTypeBalance) => formatTypeBalance(bal, now);
 
     return {
       paidLeave:   fmt(leaveBalances.paidLeave),
       sickLeave:   fmt(leaveBalances.sickLeave),
       casualLeave: fmt(leaveBalances.casualLeave),
       asOf: now.toISOString(),
+    };
+  }
+
+  // ─── Balances list (admin "Leave Balances" page) ─────────────────────────────
+  //
+  // One row per employee × leave type, built from the same figures getBalance()
+  // returns (no entitlement/used values are invented). Paginated by employee.
+
+  static async listBalances(params: { page: number; limit: number; search?: string }) {
+    await connectDB();
+
+    const filter: Record<string, unknown> = {};
+    if (params.search) {
+      const rx = { $regex: params.search.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), $options: 'i' };
+      filter.$or = [{ firstName: rx }, { lastName: rx }, { email: rx }, { employeeId: rx }];
+    }
+
+    const skip = (params.page - 1) * params.limit;
+    const [users, total] = await Promise.all([
+      User.find(filter)
+        .select('_id employeeId firstName lastName leaveBalances')
+        .sort({ employeeId: 1 })
+        .skip(skip)
+        .limit(params.limit)
+        .lean() as unknown as Promise<Array<Pick<IUser, 'employeeId' | 'firstName' | 'lastName' | 'leaveBalances'> & { _id: mongoose.Types.ObjectId }>>,
+      User.countDocuments(filter),
+    ]);
+
+    const now = new Date();
+    const types = ['paidLeave', 'sickLeave', 'casualLeave'] as const;
+    const data = users.flatMap((u) => types.map((leaveType) => {
+      const b = formatTypeBalance(u.leaveBalances[leaveType], now);
+      return {
+        employee: { _id: u._id.toHexString(), firstName: u.firstName, lastName: u.lastName, employeeId: u.employeeId },
+        leaveType,
+        currentYear:        b.currentYear,
+        carriedForward:     b.carriedForward,
+        carryForwardExpiry: b.carryForwardExpiry,
+        available:          b.total,
+      };
+    }));
+
+    return {
+      data,
+      pagination: { page: params.page, limit: params.limit, total, totalPages: Math.ceil(total / params.limit) },
     };
   }
 

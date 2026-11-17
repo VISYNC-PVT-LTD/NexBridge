@@ -10,15 +10,19 @@ import Pagination from '@components/shared/Pagination';
 import { usePagination } from '@/hooks/usePagination';
 import { apiFetch } from '@lib/utils/api-client';
 import useSWR from 'swr';
+import { formatLeaveDays, leaveTypeLabel } from '@lib/utils/leave-days';
 
 interface EmpRef { _id: string; firstName: string; lastName: string; employeeId: string }
+// Shape of GET /api/v1/leaves/balances (admin): one row per employee × leave type.
+// The API reports this year's balance, valid carry-forward and the available
+// total; it does not report an entitlement or a used count.
 interface BalanceItem {
-  employeeId: string | EmpRef;
+  employee: EmpRef;
   leaveType: string;
-  entitled: number;
-  used: number;
-  remaining: number;
-  carriedForward?: number;
+  currentYear: number;
+  carriedForward: number;
+  carryForwardExpiry: string | null;
+  available: number;
 }
 interface Res { success: boolean; data: BalanceItem[]; pagination?: { total: number; totalPages: number } }
 
@@ -32,10 +36,10 @@ export default function LeaveBalancesPage() {
 
   const query = buildQuery({ search: search || undefined });
   const { data, isLoading } = useSWR(
-    `/api/v1/leaves/balance?${query}`,
+    `/api/v1/leaves/balances?${query}`,
     (url: string) => apiFetch<Res>(url),
   );
-  const balances   = data?.data ?? [];
+  const balances   = Array.isArray(data?.data) ? data.data : [];
   const pagination = data?.pagination;
 
   const updateParam = (key: string, value: string) => {
@@ -45,13 +49,10 @@ export default function LeaveBalancesPage() {
     router.push(`/leave/balances?${sp.toString()}`);
   };
 
-  const empLabel = (b: BalanceItem) => {
-    if (typeof b.employeeId === 'object' && b.employeeId !== null) {
-      const e = b.employeeId as EmpRef;
-      return { name: `${e.firstName} ${e.lastName}`, id: e.employeeId };
-    }
-    return { name: String(b.employeeId), id: '' };
-  };
+  const empLabel = (b: BalanceItem) => ({
+    name: b.employee ? `${b.employee.firstName} ${b.employee.lastName}` : '—',
+    id: b.employee?.employeeId ?? '',
+  });
 
   return (
     <AdminLayout breadcrumb={[{ label: 'Leave', href: '/leave' }, { label: 'Balances' }]}>
@@ -85,17 +86,17 @@ export default function LeaveBalancesPage() {
           <table className="w-full text-sm">
             <thead className="bg-gray-50 border-b border-gray-200">
               <tr>
-                {['Employee', 'ID', 'Leave Type', 'Entitled', 'Used', 'Carried Fwd', 'Remaining'].map(h => (
+                {['Employee', 'ID', 'Leave Type', 'This Year', 'Carried Fwd', 'Available'].map(h => (
                   <th key={h} className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wide">{h}</th>
                 ))}
               </tr>
             </thead>
             {isLoading ? (
-              <TableSkeleton rows={8} cols={7} />
+              <TableSkeleton rows={8} cols={6} />
             ) : balances.length === 0 ? (
               <tbody>
                 <tr>
-                  <td colSpan={7}>
+                  <td colSpan={6}>
                     <EmptyState
                       title="No leave balance data found"
                       filtered={!!search}
@@ -109,14 +110,13 @@ export default function LeaveBalancesPage() {
                 {balances.map((b, i) => {
                   const { name, id } = empLabel(b);
                   return (
-                    <tr key={i} className="border-b border-gray-100 hover:bg-gray-50">
+                    <tr key={`${b.employee?._id ?? i}-${b.leaveType}`} className="border-b border-gray-100 hover:bg-gray-50">
                       <td className="px-4 py-3 font-medium text-gray-900">{name}</td>
                       <td className="px-4 py-3 font-mono text-xs text-gray-500">{id || '—'}</td>
-                      <td className="px-4 py-3 text-gray-700">{b.leaveType}</td>
-                      <td className="px-4 py-3 text-gray-600">{b.entitled}</td>
-                      <td className="px-4 py-3 text-red-600">{b.used}</td>
-                      <td className="px-4 py-3 text-blue-600">{b.carriedForward ?? 0}</td>
-                      <td className="px-4 py-3 font-semibold text-green-700">{b.remaining}</td>
+                      <td className="px-4 py-3 text-gray-700">{leaveTypeLabel(b.leaveType)}</td>
+                      <td className="px-4 py-3 text-gray-600">{formatLeaveDays(b.currentYear)}</td>
+                      <td className="px-4 py-3 text-blue-600" title={b.carryForwardExpiry ? `Expires ${b.carryForwardExpiry}` : undefined}>{formatLeaveDays(b.carriedForward)}</td>
+                      <td className="px-4 py-3 font-semibold text-green-700">{formatLeaveDays(b.available)}</td>
                     </tr>
                   );
                 })}

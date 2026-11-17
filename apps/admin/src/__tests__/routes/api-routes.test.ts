@@ -17,11 +17,13 @@ import * as regApproveRoute from '@/app/api/v1/regularizations/[id]/approve/rout
 import * as regWithdrawRoute from '@/app/api/v1/regularizations/[id]/withdraw/route';
 import * as payrollListRoute from '@/app/api/v1/payroll/route';
 import * as reportsRoute from '@/app/api/v1/reports/attendance/route';
+import * as leaveBalancesRoute from '@/app/api/v1/leaves/balances/route';
 import { AuthService, AppError } from '@services/AuthService';
 import { AttendanceService } from '@services/AttendanceService';
 import { RegularizationService } from '@services/RegularizationService';
 import { PayrollService } from '@services/PayrollService';
 import { ReportService } from '@services/ReportService';
+import { LeaveService } from '@services/LeaveService';
 import { __resetMemoryRateLimits } from '@mw/rateLimiter';
 
 const BASE = 'http://localhost:3000';
@@ -80,6 +82,9 @@ describe('HR admin endpoints: admin and super_admin allowed; others 403', () => 
       () => jest.spyOn(ReportService, 'attendanceReport' as never).mockResolvedValue({} as never)],
     ['PATCH /regularizations/:id/approve', (h) => regApproveRoute.PATCH(req('/api/v1/regularizations/x/approve', { method: 'PATCH', headers: h }), idParams),
       () => jest.spyOn(RegularizationService, 'approve').mockResolvedValue({ id: 'x', status: 'approved' } as never)],
+    // Admin "Leave Balances" page (lists every employee's balances).
+    ['GET /leaves/balances', (h) => leaveBalancesRoute.GET(req('/api/v1/leaves/balances?page=1&limit=20', { headers: h })),
+      () => jest.spyOn(LeaveService, 'listBalances').mockResolvedValue({ data: [], pagination: { page: 1, limit: 20, total: 0, totalPages: 0 } } as never)],
   ];
 
   it.each(cases)('%s: employee, manager, executive → 403', async (_name, call) => {
@@ -196,6 +201,8 @@ describe('POST /auth/refresh', () => {
     }));
     expect(res.status).toBe(200);
     expect(svc.mock.calls[0].slice(0, 2)).toEqual(['cookie-rt', '507f1f77bcf86cd799439013']);
+    // A cookie-restored tab (empty sessionStorage) learns its session id here.
+    expect(await res.json()).toMatchObject({ data: { accessToken: 'a', refreshToken: 'b', sessionId: '507f1f77bcf86cd799439013' } });
   });
 
   it('web: cookie refresh from another origin is refused', async () => {
