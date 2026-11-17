@@ -4,6 +4,7 @@ import 'package:go_router/go_router.dart';
 import '../../../../core/models/leave.dart';
 import '../../../../core/router/route_names.dart';
 import '../../../../shared/widgets/error_widget.dart';
+import '../../../../shared/widgets/loading_overlay.dart';
 import '../providers/leave_provider.dart';
 
 class LeaveScreen extends ConsumerStatefulWidget {
@@ -83,10 +84,10 @@ class _BalanceCard extends StatelessWidget {
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
-                _Stat(label: 'Entitled', value: '${balance.entitled}'),
-                _Stat(label: 'Used', value: '${balance.used}'),
-                _Stat(label: 'Carry Fwd', value: '${balance.carriedForward}'),
-                _Stat(label: 'Remaining', value: '${balance.remaining}', highlight: true),
+                // Only the figures the API reports (no entitlement / used exists).
+                _Stat(label: 'This Year', value: formatLeaveDays(balance.currentYear)),
+                _Stat(label: 'Carry Fwd', value: formatLeaveDays(balance.carriedForward)),
+                _Stat(label: 'Available', value: formatLeaveDays(balance.available), highlight: true),
               ],
             ),
           ],
@@ -130,34 +131,15 @@ class _HistoryTab extends ConsumerWidget {
               return ListTile(
                 onTap: () => context.push(RouteNames.leaveDetail(l.id)),
                 title: Text(leaveTypeLabel(l.leaveType)),
-                subtitle: Text('${l.startDate.substring(0, 10)} → ${l.endDate.substring(0, 10)} · ${l.days} day${l.days != 1 ? 's' : ''}'),
-                trailing: _StatusChipSmall(status: l.status),
+                subtitle: Text('${l.startDate.substring(0, 10)} → ${l.endDate.substring(0, 10)} · ${leaveDurationLabel(l.days)}'),
+                // Shared chip: same colours/labels as the detail screen, incl.
+                // withdrawn/revoked (the private chip showed them unstyled).
+                trailing: StatusChip(status: l.status),
               );
             },
           ),
         );
       },
-    );
-  }
-}
-
-class _StatusChipSmall extends StatelessWidget {
-  const _StatusChipSmall({required this.status});
-  final String status;
-
-  @override
-  Widget build(BuildContext context) {
-    final (bg, fg) = switch (status) {
-      'pending' => (const Color(0xFFFEF3C7), const Color(0xFFB45309)),
-      'approved' => (const Color(0xFFDCFCE7), const Color(0xFF15803D)),
-      'rejected' => (const Color(0xFFFEE2E2), const Color(0xFFB91C1C)),
-      'cancelled' => (const Color(0xFFF3F4F6), const Color(0xFF6B7280)),
-      _ => (const Color(0xFFF3F4F6), const Color(0xFF374151)),
-    };
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-      decoration: BoxDecoration(color: bg, borderRadius: BorderRadius.circular(100)),
-      child: Text(status[0].toUpperCase() + status.substring(1), style: TextStyle(color: fg, fontSize: 11, fontWeight: FontWeight.w500)),
     );
   }
 }

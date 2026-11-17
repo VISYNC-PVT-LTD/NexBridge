@@ -89,19 +89,26 @@ class StatusChip extends StatelessWidget {
     );
   }
 
-  (Color, Color, String) _resolve(String status) => switch (status.toLowerCase()) {
+  // Neutral statuses use gray-600 on gray-200 (contrast 6.1:1). The previous
+  // gray-500 on gray-100 was 4.4:1 (below WCAG AA for 12px text) and the pill
+  // was indistinguishable from the list background.
+  static const _neutralBg = Color(0xFFE5E7EB);
+  static const _neutralFg = Color(0xFF4B5563);
+
+  (Color, Color, String) _resolve(String status) => switch (status.trim().toLowerCase()) {
+    '' => (const Color(0xFFF3F4F6), const Color(0xFF374151), 'Unknown'),
     'present' => (const Color(0xFFDCFCE7), const Color(0xFF15803D), 'Present'),
     'absent' => (const Color(0xFFFEE2E2), const Color(0xFFB91C1C), 'Absent'),
     'checked-in' => (const Color(0xFFDBEAFE), const Color(0xFF1D4ED8), 'Active'),
     'half_day' || 'half-day' => (const Color(0xFFFEF3C7), const Color(0xFFB45309), 'Half Day'),
     'leave' => (const Color(0xFFDBEAFE), const Color(0xFF1D4ED8), 'Leave'),
     'holiday' => (const Color(0xFFEDE9FE), const Color(0xFF6D28D9), 'Holiday'),
-    'weekend' => (const Color(0xFFF3F4F6), const Color(0xFF6B7280), 'Weekend'),
+    'weekend' => (_neutralBg, _neutralFg, 'Weekend'),
     'pending' => (const Color(0xFFFEF3C7), const Color(0xFFB45309), 'Pending'),
     'approved' => (const Color(0xFFDCFCE7), const Color(0xFF15803D), 'Approved'),
     'rejected' => (const Color(0xFFFEE2E2), const Color(0xFFB91C1C), 'Rejected'),
-    'cancelled' => (const Color(0xFFF3F4F6), const Color(0xFF6B7280), 'Cancelled'),
-    'withdrawn' => (const Color(0xFFF3F4F6), const Color(0xFF6B7280), 'Withdrawn'),
+    'cancelled' => (_neutralBg, _neutralFg, 'Cancelled'),
+    'withdrawn' => (_neutralBg, _neutralFg, 'Withdrawn'),
     'revoked' => (const Color(0xFFFFEDD5), const Color(0xFFC2410C), 'Revoked'),
     'finalised' || 'finalized' => (const Color(0xFFDCFCE7), const Color(0xFF15803D), 'Finalised'),
     'draft' => (const Color(0xFFF3F4F6), const Color(0xFF374151), 'Draft'),

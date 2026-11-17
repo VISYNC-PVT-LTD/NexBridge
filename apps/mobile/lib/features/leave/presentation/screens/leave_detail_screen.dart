@@ -35,7 +35,7 @@ class LeaveDetailScreen extends ConsumerWidget {
                     _Row(label: 'Type', value: leaveTypeLabel(leave.leaveType)),
                     _Row(label: 'From', value: fmt.format(DateTime.parse(leave.startDate))),
                     _Row(label: 'To', value: fmt.format(DateTime.parse(leave.endDate))),
-                    _Row(label: 'Days', value: '${leave.days}'),
+                    _Row(label: 'Days', value: leave.days == null ? '—' : formatLeaveDays(leave.days!)),
                     _Row(label: 'Applied', value: fmt.format(DateTime.parse(leave.createdAt))),
                   ]),
                 )),

@@ -15,18 +15,9 @@ class LeaveRemoteSource {
     for (final key in const ['paidLeave', 'sickLeave', 'casualLeave']) {
       final bal = data[key] as Map<String, dynamic>?;
       if (bal == null) continue;
-      final currentYear = (bal['currentYear'] as num?)?.toInt() ?? 0;
-      final cf = (bal['carriedForward'] as num?)?.toInt() ?? 0;
-      final total = (bal['total'] as num?)?.toInt() ?? (currentYear + cf);
-      result.add(LeaveBalance(
-        leaveType: key,
-        leaveTypeName: labels[key] ?? key,
-        entitled: total,
-        used: 0,
-        remaining: total,
-        carriedForward: cf,
-        cfExpiryDate: bal['carryForwardExpiry'] as String?,
-      ));
+      // Regression: values were `.toInt()`-truncated (a pro-rated 1.5 days showed
+      // as 1) and an invented "Entitled"/"Used 0" pair was shown.
+      result.add(LeaveBalance.fromApi(key, labels[key] ?? key, bal));
     }
     return result;
   }
