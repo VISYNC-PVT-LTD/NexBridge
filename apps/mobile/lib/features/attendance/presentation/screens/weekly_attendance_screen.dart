@@ -5,6 +5,7 @@ import 'package:intl/intl.dart';
 import '../../../../core/models/attendance.dart';
 import '../../../../core/router/route_names.dart';
 import '../../../../shared/widgets/loading_overlay.dart';
+import '../../domain/attendance_display.dart';
 import '../providers/attendance_provider.dart';
 
 class WeeklyAttendanceScreen extends ConsumerStatefulWidget {
@@ -158,7 +159,7 @@ class _WeekSummary extends StatelessWidget {
     final half = records.where((r) => r.status == 'half_day' || r.status == 'half-day').length;
     final leave = records.where((r) => r.status == 'leave').length;
     final absent = records.where((r) => r.status == 'absent').length;
-    final totalHours = records.fold(0.0, (s, r) => s + (r.workHours ?? 0));
+    final totalHours = records.fold(0, (s, r) => s + (r.totalMinutes ?? 0)) / 60;
 
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
@@ -195,13 +196,23 @@ class _DayListTile extends StatelessWidget {
       trailing: record != null
           ? StatusChip(status: record!.status)
           : Text(isFuture ? '' : '—', style: const TextStyle(color: Colors.grey)),
-      subtitle: record?.checkIn != null ? Text('${_fmt(record!.checkIn)} · ${record!.workHours != null ? '${record!.workHours!.toStringAsFixed(1)}h' : ''}') : null,
+      subtitle: _subtitle(),
     );
   }
 
-  String _fmt(String? iso) {
-    if (iso == null) return '';
-    try { final dt = DateTime.parse(iso).toLocal(); return '${dt.hour.toString().padLeft(2, '0')}:${dt.minute.toString().padLeft(2, '0')}'; }
-    catch (_) { return iso; }
+  Widget? _subtitle() {
+    final r = record;
+    if (r == null) return null;
+    final now = DateTime.now();
+    final text = historySubtitle(
+      checkInIso: r.checkIn,
+      checkOutIso: r.checkOut,
+      totalMinutes: r.totalMinutes,
+      missedCheckout: r.missedCheckout,
+      unresolvedMissedCheckout: r.hasUnresolvedMissedCheckout,
+      // Today's status is provisional until the day ends.
+      isToday: date.year == now.year && date.month == now.month && date.day == now.day,
+    );
+    return text.isEmpty ? null : Text(text);
   }
 }

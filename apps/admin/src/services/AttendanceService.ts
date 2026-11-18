@@ -820,6 +820,10 @@ export class AttendanceService {
         ? {
             sessionId: (activeSession._id as mongoose.Types.ObjectId).toHexString(),
             checkInTimestamp: activeSession.checkIn.timestamp.toISOString(),
+            // Company-local attendance date of this session. It differs from
+            // todayDateString when the open session began on an earlier day
+            // (display only: clients must not count it as today's work time).
+            dateString: activeSession.dateString,
             // Clients reset the timer to 00:00:00 at this instant and re-sync.
             checkoutDeadline: checkoutDeadline(activeSession.checkIn.timestamp).toISOString(),
             checkInLocation: {

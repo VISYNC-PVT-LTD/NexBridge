@@ -4,6 +4,7 @@ import 'package:go_router/go_router.dart';
 import 'package:intl/intl.dart';
 import '../../../../core/router/route_names.dart';
 import '../../../../shared/widgets/loading_overlay.dart';
+import '../../domain/attendance_display.dart';
 import '../providers/attendance_provider.dart';
 
 class AttendanceHistoryScreen extends ConsumerStatefulWidget {
@@ -65,7 +66,18 @@ class _AttendanceHistoryScreenState extends ConsumerState<AttendanceHistoryScree
                         onTap: () => context.push(RouteNames.attendanceDay(r.date.substring(0, 10))),
                         title: Text(date != null ? DateFormat('EEE d MMM').format(date) : r.date),
                         trailing: StatusChip(status: r.status),
-                        subtitle: r.checkIn != null ? Text('${_fmt(r.checkIn)} · ${r.workHours != null ? '${r.workHours!.toStringAsFixed(1)}h' : ''}') : null,
+                        subtitle: Builder(builder: (_) {
+                          final now = DateTime.now();
+                          final text = historySubtitle(
+                            checkInIso: r.checkIn,
+                            checkOutIso: r.checkOut,
+                            totalMinutes: r.totalMinutes,
+                            missedCheckout: r.missedCheckout,
+                            unresolvedMissedCheckout: r.hasUnresolvedMissedCheckout,
+                            isToday: date != null && date.year == now.year && date.month == now.month && date.day == now.day,
+                          );
+                          return text.isEmpty ? const SizedBox.shrink() : Text(text);
+                        }),
                       );
                     },
                   ),
@@ -76,11 +88,5 @@ class _AttendanceHistoryScreenState extends ConsumerState<AttendanceHistoryScree
         ],
       ),
     );
-  }
-
-  String _fmt(String? iso) {
-    if (iso == null) return '';
-    try { final dt = DateTime.parse(iso).toLocal(); return '${dt.hour.toString().padLeft(2, '0')}:${dt.minute.toString().padLeft(2, '0')}'; }
-    catch (_) { return iso; }
   }
 }

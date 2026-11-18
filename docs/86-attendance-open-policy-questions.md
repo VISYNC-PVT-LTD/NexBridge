@@ -7,7 +7,7 @@ branch `feature/bug-fix-and-optimization`), why it is ambiguous, and what the
 business owner needs to decide. The options are listed so the decision is quick;
 none is a recommendation to implement without sign-off.
 
-Who should answer: HR / payroll owner (Q2, Q3) and operations owner (Q1).
+Who should answer: HR / payroll owner (Q2, Q3, Q6) and operations owner (Q1).
 
 ---
 
@@ -136,6 +136,33 @@ employees should be able to is a product decision (a new input, not a fix).
 The app's date-range preview is labelled as calendar days ("weekends and
 holidays are not deducted"); the server computes the working days charged.
 
+## Q6. Should a payroll lock or finalisation stop leave/regularization changes? (added 2026-11-18)
+
+Measured on a disposable local database with fake accounts (API calls; one
+month in each state). "Warn" = request succeeds and returns a `warnings` entry.
+
+| Operation (for a date in the month) | Draft payroll | Finalised (that employee) | Locked month (record still draft) |
+|---|---|---|---|
+| Leave apply | allowed | allowed | allowed |
+| Leave approve | allowed | allowed, **no warning** | allowed, no warning |
+| Leave revoke | allowed | allowed, **warning** (BR-LVE-22) | allowed, no warning |
+| Regularization apply | allowed | allowed | allowed |
+| Regularization approve | allowed | allowed, **warning** | allowed, no warning (warns only if that employee is also finalised) |
+| Payroll recompute | allowed | **blocked** `PAY_001` | **blocked** `PAY_006` |
+
+The stored payroll record is never updated by these changes: it stays stale
+until someone recomputes (draft) — e.g. a regularization moved "present" from
+2.5 to 3.5 only after a manual recompute — and a finalised or locked month
+cannot be recomputed without first unfinalising/unlocking.
+
+The written rule (BR-LVE-22) covers only leave *revocation* in a *finalised*
+month (warn, do not block). Leave approval in a finalised month and every
+change in a locked month are silent today. Options: (a) keep as is and rely on
+manual review; (b) warn on every leave/regularization change that touches a
+finalised or locked month (no blocking); (c) block such changes until the month
+is unlocked/unfinalised (admin must unlock first); (d) block only for locked
+months and warn for finalised ones. **Not changed.**
+
 ## What was verified, and how
 
 | Item | Evidence |
@@ -146,6 +173,38 @@ holidays are not deducted"); the server computes the working days charged.
 | Q2 check-in-only path forces `present` | code reading (`RegularizationService.approve`); existing unit test |
 | Q3 unconditional `present` on approval | code reading (`RegularizationService.approve`, final `else` branch) |
 | Q3 protected statuses on the other paths | `missed-checkout.test.ts`, `reconcileForSession` |
+| Q6 lock/finalise matrix above | API calls on a disposable local DB (2026-11-18); payroll records read directly |
+
+## Related verified behaviour and test limitations (2026-11-18)
+
+All on a disposable local MongoDB (127.0.0.1) with fake test-domain accounts;
+mocked email (local outbox) and no Firebase/Redis/network beyond loopback.
+
+- **24-hour missed check-out on a phone — simulation, not a real 24-hour wait.**
+  An open session was created through the real `AttendanceService.checkIn`
+  in a one-off process whose clock was shifted back by ~24 h, so the phone and
+  server kept their real clocks. Observed on the phone: the timer counted to
+  23:59:46, reset to 00:00:00 at the deadline, the status re-synced (three
+  calls, then stopped), and a "Missed check-out" banner named the date. The day
+  stayed `absent` with `checkOut: null` (nothing fabricated). Reopening the app
+  after the cutoff showed the same state. Regularization (phone → admin
+  approval) and leave (phone → admin approval) each resolved a separate missed
+  day; the banner cleared. Automated: `missed-checkout.test.ts` (real DB,
+  controlled `Date`).
+- **Home vs History wording.** Home previously said "Partial Day" while History
+  showed the server status "Absent" for the same day. Home now says "Checked
+  Out · N recorded today · Status so far: <server status>", and History marks
+  today's row "So far". No threshold was changed (see Q4 for 8 h vs 9 h).
+- **Access tokens after logout.** Logout revokes the session's refresh token
+  immediately (a copied refresh cookie gets 401). The access token is a
+  stateless 15-minute JWT without a session id: a copy of it (Bearer header or
+  `__session` cookie) keeps working on API routes and pages until it expires,
+  then gets 401 / redirect to login (verified with a +16 min server clock).
+  Immediate revocation would need an architecture change (see the report).
+- **Push start-up failure on a phone.** A build copy with an injected Firebase
+  failure (throw) and an injected hang both started the app (the hang after the
+  10 s limit), restored the session, signed out and signed in without a false
+  "No connection" error. Real push delivery remains untested (BLOCKED).
 
 Nothing in this document has been deployed or tested against the production
 database.

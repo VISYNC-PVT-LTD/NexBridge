@@ -157,6 +157,9 @@ suite('24-hour missed check-out (real DB, controlled clock)', () => {
     expect(st.isCheckedIn).toBe(true);
     expect(st.currentSession!.checkoutDeadline).toBe(new Date(T0.getTime() + 24 * H).toISOString());
     expect(st.forgotCheckout).toBe(false);
+    // The open session belongs to the check-in day, not to "today" (display data).
+    expect(st.currentSession!.dateString).toBe('2026-03-02');
+    expect(st.todayDateString).toBe('2026-03-03');
 
     const out = await checkOut(emp);
     expect(out.durationMinutes).toBe(24 * 60 - 1); // a real (long) punch-out, not fabricated

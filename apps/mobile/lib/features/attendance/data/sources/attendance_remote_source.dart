@@ -22,6 +22,7 @@ class AttendanceRemoteSource {
       'staleSession': raw['staleSession'],
       'unresolvedMissedCheckoutDates': raw['unresolvedMissedCheckoutDates'] ?? const <String>[],
       'currentSessionStart': currentSession?['checkInTimestamp'],
+      'currentSessionDate': currentSession?['dateString'],
       'currentSessionDeadline': currentSession?['checkoutDeadline'],
       'sessions': rawSessions.map((s) {
         final m = s as Map<String, dynamic>;

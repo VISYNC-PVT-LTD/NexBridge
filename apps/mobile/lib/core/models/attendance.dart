@@ -76,6 +76,10 @@ class TodayAttendance {
   /// `unresolvedMissedCheckoutDates`). There can be more than one.
   final List<String> unresolvedMissedCheckoutDates;
   final String? currentSessionStart;
+  /// Company-local attendance date of the open session (server field
+  /// `currentSession.dateString`). Earlier than [date] when the session began
+  /// on a previous day; such time is not "today's" work.
+  final String? currentSessionDate;
   /// checkIn + 24 h. At this instant the timer resets to 00:00:00 and the app
   /// re-syncs with the server (the session becomes a missed check-out).
   final String? currentSessionDeadline;
@@ -90,6 +94,7 @@ class TodayAttendance {
     this.staleSession,
     this.unresolvedMissedCheckoutDates = const [],
     this.currentSessionStart,
+    this.currentSessionDate,
     this.currentSessionDeadline,
     required this.sessions,
     required this.totalMinutesToday,
@@ -118,6 +123,7 @@ class TodayAttendance {
               .toList() ??
           const [],
       currentSessionStart: json['currentSessionStart'] as String?,
+      currentSessionDate: json['currentSessionDate'] as String?,
       currentSessionDeadline: json['currentSessionDeadline'] as String?,
       sessions: (json['sessions'] as List<dynamic>?)
               ?.map((e) => AttendanceSession.fromJson(e as Map<String, dynamic>))
@@ -136,8 +142,14 @@ class AttendanceRecord {
   final String? checkIn;
   final String? checkOut;
   final double? workHours;
+  /// Minutes credited for the day (employee history sends `totalMinutes`).
+  final int? totalMinutes;
   final bool isRegularized;
   final List<AttendanceSession> sessions;
+  /// A session of this day passed its 24-hour window without a check-out.
+  final bool missedCheckout;
+  /// ...and it has not yet been resolved by regularization or leave.
+  final bool hasUnresolvedMissedCheckout;
 
   const AttendanceRecord({
     required this.id,
@@ -147,25 +159,39 @@ class AttendanceRecord {
     this.checkIn,
     this.checkOut,
     this.workHours,
+    this.totalMinutes,
     required this.isRegularized,
     this.sessions = const [],
+    this.missedCheckout = false,
+    this.hasUnresolvedMissedCheckout = false,
   });
 
+  // The employee history endpoint (/attendance/history) sends dateString,
+  // totalMinutes and per-session timestamps; the admin list sends date,
+  // workHours and checkIn/checkOut. Regression: the app read only the admin
+  // fields, so employee history always showed "Hours: 0.0h" and no times.
   factory AttendanceRecord.fromJson(Map<String, dynamic> json) {
+    final sessions = (json['sessions'] as List<dynamic>?)
+            ?.map((e) => AttendanceSession.fromJson(e as Map<String, dynamic>))
+            .toList() ??
+        <AttendanceSession>[];
+    final totalMinutes = (json['totalMinutes'] as num?)?.toInt();
+    final workHours = (json['workHours'] as num?)?.toDouble() ??
+        (totalMinutes != null && totalMinutes > 0 ? (totalMinutes / 60 * 10).round() / 10 : null);
     return AttendanceRecord(
       id: json['_id'] as String? ?? json['id'] as String? ?? '',
       employeeId: _extractId(json['employeeId']),
       // history endpoint returns dateString; admin endpoint returns date
       date: json['date'] as String? ?? json['dateString'] as String? ?? '',
       status: json['status'] as String? ?? 'absent',
-      checkIn: json['checkIn'] as String?,
-      checkOut: json['checkOut'] as String?,
-      workHours: (json['workHours'] as num?)?.toDouble(),
+      checkIn: json['checkIn'] as String? ?? (sessions.isNotEmpty ? sessions.first.checkIn : null),
+      checkOut: json['checkOut'] as String? ?? (sessions.isNotEmpty ? sessions.last.checkOut : null),
+      workHours: workHours,
+      totalMinutes: totalMinutes ?? (workHours != null ? (workHours * 60).round() : null),
       isRegularized: json['isRegularized'] as bool? ?? false,
-      sessions: (json['sessions'] as List<dynamic>?)
-              ?.map((e) => AttendanceSession.fromJson(e as Map<String, dynamic>))
-              .toList() ??
-          [],
+      sessions: sessions,
+      missedCheckout: json['missedCheckout'] as bool? ?? sessions.any((s) => s.missedCheckout),
+      hasUnresolvedMissedCheckout: json['hasUnresolvedMissedCheckout'] as bool? ?? false,
     );
   }
 

@@ -39,11 +39,26 @@ class AttendanceNotifier extends StateNotifier<AsyncValue<TodayAttendance?>> {
     try {
       final today = await _source.getToday();
       state = AsyncValue.data(today);
+      _refreshHistoryIfChanged(today);
       _resolveState(today);
     } catch (e) {
       state = AsyncValue.error(e, StackTrace.current);
       _setCheckInState(CheckInState.idle);
     }
+  }
+
+  String? _lastHistoryKey;
+
+  /// History is cached per date range; refetch it whenever the server's view
+  /// of attendance changes (check-in/out, 24-hour cutoff, an approved
+  /// regularization or leave). Regression: after the cutoff, History still
+  /// showed the missed day as "Active" until the app was restarted.
+  void _refreshHistoryIfChanged(TodayAttendance today) {
+    final key = attendanceHistoryKey(today);
+    if (_lastHistoryKey != null && _lastHistoryKey != key) {
+      _ref.invalidate(attendanceHistoryProvider);
+    }
+    _lastHistoryKey = key;
   }
 
   void _resolveState(TodayAttendance today) {
@@ -79,6 +94,7 @@ class AttendanceNotifier extends StateNotifier<AsyncValue<TodayAttendance?>> {
       final nonce = const Uuid().v4();
       final today = await _source.checkIn(lat: lat, lng: lng, accuracy: accuracy, nonce: nonce);
       state = AsyncValue.data(today);
+      _refreshHistoryIfChanged(today);
       _resolveState(today);
     } catch (e) {
       _setCheckInState(CheckInState.idle);
@@ -113,6 +129,7 @@ class AttendanceNotifier extends StateNotifier<AsyncValue<TodayAttendance?>> {
       _stopSyncTimer();
       _stopLocationTracking();
       state = AsyncValue.data(today);
+      _refreshHistoryIfChanged(today);
       _resolveState(today);
     } catch (e) {
       _setCheckInState(CheckInState.checkedIn);
@@ -183,6 +200,17 @@ final attendanceProvider = StateNotifierProvider<AttendanceNotifier, AsyncValue<
   final source = ref.watch(attendanceSourceProvider);
   return AttendanceNotifier(source, CompanySettings.defaults, ref);
 });
+
+/// What, in today's status, means previously fetched history may be stale.
+String attendanceHistoryKey(TodayAttendance t) => [
+      t.date,
+      t.status,
+      t.isCheckedIn,
+      t.totalMinutesToday,
+      t.currentSessionStart ?? '',
+      t.sessions.length,
+      t.missedCheckoutDates.join(','),
+    ].join('|');
 
 final attendanceHistoryProvider = FutureProvider.family<List<AttendanceRecord>, ({String? startDate, String? endDate})>((ref, params) async {
   final source = ref.watch(attendanceSourceProvider);

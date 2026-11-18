@@ -1,4 +1,5 @@
 import 'dart:async';
+import '../../../attendance/domain/attendance_display.dart';
 import '../../../attendance/domain/session_timer.dart';
 import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
@@ -193,7 +194,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
       final elapsed = _calcElapsedMinutes(today);
       final requiredMinutes = _shiftSettings?.requiredDailyMinutes ?? CompanySettings.defaults.requiredDailyMinutes;
       final remaining = requiredMinutes - elapsed;
-      if (remaining > 120) {
+      // A session opened on an earlier day is not "today's" work: no
+      // "remaining today" prompt for it.
+      if (remaining > 120 && !_openSessionFromEarlierDay(today)) {
         final confirm = await showDialog<bool>(
           context: context,
           builder: (dialogContext) => AlertDialog(
@@ -271,8 +274,16 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
     }
   }
 
+  bool _openSessionFromEarlierDay(TodayAttendance? t) =>
+      t != null &&
+      t.currentSessionStart != null &&
+      sessionStartedBeforeToday(sessionDate: t.currentSessionDate, sessionStartIso: t.currentSessionStart, todayDate: t.date);
+
   int _calcElapsedMinutes(TodayAttendance? today) {
     if (today?.currentSessionStart == null) return today?.totalMinutesToday ?? 0;
+    // Time from a session opened on an earlier day is not today's work
+    // (regression: it was shown as "Overtime: 14h 58m" today).
+    if (_openSessionFromEarlierDay(today)) return today!.totalMinutesToday;
     final start = DateTime.tryParse(today!.currentSessionStart!)?.toLocal();
     if (start == null) return today.totalMinutesToday;
     if (missedCheckoutDeadlinePassed(today.currentSessionDeadline, DateTime.now())) {
@@ -561,6 +572,10 @@ class _StatusCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final activeSession = today?.sessions.where((s) => s.checkOut == null).firstOrNull;
+    final t = today;
+    final fromEarlierDay = t != null &&
+        t.currentSessionStart != null &&
+        sessionStartedBeforeToday(sessionDate: t.currentSessionDate, sessionStartIso: t.currentSessionStart, todayDate: t.date);
     return Card(
       child: Padding(
         padding: const EdgeInsets.all(16),
@@ -584,7 +599,7 @@ class _StatusCard extends StatelessWidget {
                 ]),
                 if (today?.currentSessionStart != null) ...[
                   const SizedBox(height: 4),
-                  Text('Since ${_formatTime(today!.currentSessionStart!)}', style: const TextStyle(color: Colors.grey)),
+                  Text('Since ${clockLabel(today!.currentSessionStart!, withDate: fromEarlierDay)}', style: const TextStyle(color: Colors.grey)),
                 ],
                 Builder(builder: (_) {
                   final addr = today?.sessions.where((s) => s.checkOut == null).firstOrNull?.checkInAddress;
@@ -599,7 +614,16 @@ class _StatusCard extends StatelessWidget {
                   );
                 }),
                 const Divider(height: 16),
-                if (elapsedMinutes < requiredDailyMinutes)
+                if (fromEarlierDay)
+                  // Not today's work: show the 24-hour limit instead of
+                  // today's remaining/overtime.
+                  Text(
+                    today?.currentSessionDeadline != null
+                        ? 'Started on an earlier day. Check out before ${clockLabel(today!.currentSessionDeadline!, withDate: true)} (24-hour limit).'
+                        : 'Started on an earlier day.',
+                    style: const TextStyle(fontSize: 14, color: Color(0xFFB45309)),
+                  )
+                else if (elapsedMinutes < requiredDailyMinutes)
                   Text('${_fmtMin(requiredDailyMinutes - elapsedMinutes)} remaining', style: TextStyle(fontSize: 14, color: elapsedMinutes >= requiredDailyMinutes - 30 ? const Color(0xFF16A34A) : const Color(0xFFD97706)))
                 else ...[
                   const Text('Shift completed', style: TextStyle(fontSize: 14, color: Color(0xFF16A34A))),
@@ -645,9 +669,13 @@ class _StatusCard extends StatelessWidget {
                 Row(children: [
                   const Icon(Icons.circle_outlined, color: Color(0xFFD97706), size: 18),
                   const SizedBox(width: 8),
-                  const Text('Partial Day', style: TextStyle(fontWeight: FontWeight.w600, color: Color(0xFFD97706))),
+                  // Was "Partial Day", which read like a day status and
+                  // contradicted History ("Absent") for the same day.
+                  const Text('Checked Out', style: TextStyle(fontWeight: FontWeight.w600, color: Color(0xFFD97706))),
                 ]),
-                Text('${_fmtMin(today?.totalMinutesToday ?? 0)} recorded'),
+                Text('${_fmtMin(today?.totalMinutesToday ?? 0)} recorded today'),
+                // The server's status for today so far (same as History).
+                Text('Status so far: ${dayStatusLabel(today?.status ?? '')}'),
                 Text('${_fmtMin(requiredDailyMinutes - (today?.totalMinutesToday ?? 0))} remaining', style: const TextStyle(color: Color(0xFFD97706))),
               ],
             ),
@@ -683,12 +711,6 @@ class _StatusCard extends StatelessWidget {
       final m = totalMin % 60;
       return '${h.toString().padLeft(2, '0')}:${m.toString().padLeft(2, '0')}';
     } catch (_) { return shiftStart; }
-  }
-  String _formatTime(String iso) {
-    try {
-      final dt = DateTime.parse(iso).toLocal();
-      return '${dt.hour.toString().padLeft(2, '0')}:${dt.minute.toString().padLeft(2, '0')}';
-    } catch (_) { return iso; }
   }
 }
 
