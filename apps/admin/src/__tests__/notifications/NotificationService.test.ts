@@ -274,3 +274,45 @@ describe('notifyAllAdmins: creates notification for each active admin', () => {
     );
   });
 });
+
+// ─── Regression: DB disconnect after the notification is saved ───────────────
+// The push/email status updates run in detached promise chains. When the DB
+// drops between Notification.create and the status write, the .catch handler's
+// own Notification.updateOne rejected too, and nothing handled that rejection
+// (an unhandled rejection can terminate the Node process).
+
+describe('create: status-update failures after a DB disconnect are handled', () => {
+  it('push and email chains do not leave unhandled rejections', async () => {
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown) => { unhandled.push(reason); };
+    process.on('unhandledRejection', onUnhandled);
+    const errSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      jest.spyOn(Notification, 'create').mockResolvedValue(makeNotification() as never);
+      jest.spyOn(FcmService, 'sendToEmployee').mockRejectedValue(new Error('push failed'));
+      global.fetch = jest.fn().mockRejectedValue(new Error('email failed')) as never;
+      const dbDown = Object.assign(new Error('connection closed'), { name: 'MongoNetworkError' });
+      (Notification.updateOne as jest.Mock).mockRejectedValue(dbDown as never);
+
+      await NotificationService.create({
+        employeeId:   EMPLOYEE_OID,
+        type:         'leaveApproved',
+        title:        'Leave Approved',
+        body:         'Your leave is approved.',
+        emailAddress: 'employee@test.example.com',
+      });
+
+      // Let the detached chains settle, then give Node a turn to report rejections.
+      await new Promise((r) => setTimeout(r, 50));
+
+      expect(unhandled).toEqual([]);
+      const logged = errSpy.mock.calls.filter((c) => c[0] === '[notification] dispatch failed:');
+      expect(logged).toHaveLength(2); // push chain + email chain
+      // Only the error class is logged — never the body or the address.
+      expect(logged.every((c) => c.length === 2 && c[1] === 'MongoNetworkError')).toBe(true);
+    } finally {
+      process.off('unhandledRejection', onUnhandled);
+      errSpy.mockRestore();
+    }
+  });
+});

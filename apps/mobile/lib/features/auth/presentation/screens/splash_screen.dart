@@ -5,6 +5,7 @@ import 'package:go_router/go_router.dart';
 import '../../../../core/constants/storage_keys.dart';
 import '../../../../core/di/providers.dart';
 import '../../../../core/router/route_names.dart';
+import '../../../../core/startup/push_startup.dart';
 import '../../../../core/storage/secure_storage.dart';
 import '../providers/auth_provider.dart';
 
@@ -43,13 +44,13 @@ class _SplashScreenState extends ConsumerState<SplashScreen> {
           // Cold-start from notification tap — permission already granted
           context.go(notifRoute);
         } else {
-          final settings = await FirebaseMessaging.instance.getNotificationSettings();
+          final route = await routeAfterSignIn(
+            pushAvailable: ref.read(pushAvailableProvider),
+            permissionStatus: () async =>
+                (await FirebaseMessaging.instance.getNotificationSettings()).authorizationStatus,
+          );
           if (!mounted) return;
-          if (settings.authorizationStatus == AuthorizationStatus.notDetermined) {
-            context.go(RouteNames.notificationPermission);
-          } else {
-            context.go(RouteNames.home);
-          }
+          context.go(route);
         }
       }
     } catch (_) {

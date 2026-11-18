@@ -13,6 +13,10 @@ final sessionExpiredProvider = StateProvider<bool>((ref) => false);
 // Cold-start notification route — overridden in main.dart when app launched from tapped notification
 final initialNotificationRouteProvider = StateProvider<String?>((ref) => null);
 
+// Whether Firebase/FCM start-up succeeded — overridden in main.dart. When false
+// the app runs without push and skips every FirebaseMessaging call.
+final pushAvailableProvider = Provider<bool>((ref) => false);
+
 // Background-tap notification route — set by main.dart onMessageOpenedApp listener, consumed by MainShell
 final pendingNotificationRouteProvider = StateProvider<String?>((ref) => null);
 

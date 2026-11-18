@@ -8,11 +8,15 @@ class NotificationPermissionScreen extends StatelessWidget {
   const NotificationPermissionScreen({super.key});
 
   Future<void> _requestAndContinue(BuildContext context) async {
-    await FirebaseMessaging.instance.requestPermission(
-      alert: true,
-      badge: true,
-      sound: true,
-    );
+    try {
+      await FirebaseMessaging.instance.requestPermission(
+        alert: true,
+        badge: true,
+        sound: true,
+      );
+    } catch (_) {
+      // Push unavailable — continue without it rather than leave the user stuck here.
+    }
     if (context.mounted) context.go(RouteNames.home);
   }
 

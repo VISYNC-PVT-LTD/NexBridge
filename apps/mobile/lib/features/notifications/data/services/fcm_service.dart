@@ -25,13 +25,19 @@ class FcmService {
 
   Future<String?> getToken() => FirebaseMessaging.instance.getToken();
 
+  /// Called without `await` after sign-in, so it must never throw: a Firebase
+  /// failure here used to surface as an unhandled async error.
   Future<void> registerToken() async {
-    final token = await getToken();
-    if (token == null) return;
-    await _postToken(token);
-    FirebaseMessaging.instance.onTokenRefresh.listen((newToken) async {
-      await _postToken(newToken);
-    });
+    try {
+      final token = await getToken();
+      if (token == null) return;
+      await _postToken(token);
+      FirebaseMessaging.instance.onTokenRefresh.listen((newToken) async {
+        await _postToken(newToken);
+      });
+    } catch (_) {
+      // Non-fatal — push stays off for this session; retried on next sign-in.
+    }
   }
 
   Future<void> _postToken(String token) async {

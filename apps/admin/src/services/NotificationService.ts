@@ -113,7 +113,9 @@ export class NotificationService {
           { _id: notifId },
           { $set: { 'channels.push.error': error } },
         );
-      });
+      })
+      // The status write itself can fail (e.g. the DB dropped after the insert).
+      .catch(logNotificationFailure);
 
     // Email — non-blocking, errors swallowed
     if (params.emailAddress) {
@@ -134,7 +136,8 @@ export class NotificationService {
             { _id: notifId },
             { $set: { 'channels.email.error': error } },
           );
-        });
+        })
+        .catch(logNotificationFailure);
     }
   }
 

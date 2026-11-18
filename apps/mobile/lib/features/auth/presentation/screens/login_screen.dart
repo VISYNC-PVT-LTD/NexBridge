@@ -2,7 +2,9 @@ import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
+import '../../../../core/di/providers.dart';
 import '../../../../core/router/route_names.dart';
+import '../../../../core/startup/push_startup.dart';
 import '../../../../shared/widgets/app_button.dart';
 import '../../../../shared/widgets/app_text_field.dart';
 import '../providers/auth_provider.dart';
@@ -61,13 +63,15 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
       if (result.requiresPasswordChange) {
         context.go(RouteNames.changePassword);
       } else {
-        final settings = await FirebaseMessaging.instance.getNotificationSettings();
+        // Sign-in already succeeded: a push failure here must not be reported
+        // as "No connection" (regression when Firebase is unavailable).
+        final route = await routeAfterSignIn(
+          pushAvailable: ref.read(pushAvailableProvider),
+          permissionStatus: () async =>
+              (await FirebaseMessaging.instance.getNotificationSettings()).authorizationStatus,
+        );
         if (!mounted) return;
-        if (settings.authorizationStatus == AuthorizationStatus.notDetermined) {
-          context.go(RouteNames.notificationPermission);
-        } else {
-          context.go(RouteNames.home);
-        }
+        context.go(route);
       }
     } on DeviceMismatchException catch (e) {
       if (!mounted) return;
