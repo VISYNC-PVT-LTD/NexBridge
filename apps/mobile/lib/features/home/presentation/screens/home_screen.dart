@@ -372,9 +372,10 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
                   sessionStart: today?.currentSessionStart,
                   deadline: today?.currentSessionDeadline,
                   isActive: checkInState == CheckInState.checkedIn,
-                  // 24-hour deadline reached while the app is open: re-sync so
-                  // the server records the missed check-out and the UI resets.
-                  onDeadlineReached: () => ref.read(attendanceProvider.notifier).reconcile(),
+                  // 24-hour deadline reached while the app is open: re-sync (with
+                  // short bounded re-checks) so the server's missed check-out is
+                  // shown even if the first refresh fails or the server lags.
+                  onDeadlineReached: () => ref.read(attendanceProvider.notifier).reconcileAfterDeadline(),
                 ),
               ),
 

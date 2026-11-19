@@ -201,6 +201,36 @@ mocked email (local outbox) and no Firebase/Redis/network beyond loopback.
   `__session` cookie) keeps working on API routes and pages until it expires,
   then gets 401 / redirect to login (verified with a +16 min server clock).
   Immediate revocation would need an architecture change (see the report).
+- **Missed check-out recovery (2026-11-19).** Phone, disposable local server:
+  with the local API made unreachable from 30 s before the cutoff, the timer
+  reset to 00:00:00 at the deadline, the app showed "Unable to load
+  attendance" (no invented state), and 11 s after the API came back a
+  scheduled re-check showed Not Checked In plus the missed check-out banner,
+  without any tap. Backgrounded across the cutoff and reopened while the API
+  was unreachable: error card, then automatic recovery ~20 s after the API
+  returned. On the server the sessions kept `checkOut` empty and 0 minutes.
+  Automated (fake server, controlled clock): first refresh offline, server
+  clock behind the phone, bounded re-checks, resume/reopen
+  (`missed_checkout_recovery_test.dart`).
+- **When nobody opens the app.** Every read path (status, history, weekly,
+  monthly, admin lists, reports, payroll compute, regularization) applies the
+  24-hour rule first, so nobody sees a stale "checked in". The stored record is
+  also swept by the `session-auto-close` cron, scheduled in `vercel.json` as
+  `0 18 * * *` (once a day, 18:00 UTC = 23:30 IST). Tested locally only
+  (GET with `Authorization: Bearer <CRON_SECRET>`: 401 without/with a wrong
+  secret; first run expired 1 overdue session, repeat run 0). A real scheduled
+  Vercel run has **not** been observed.
+- **Midnight.** A session 23:50–00:10 IST is attributed to the check-in date
+  (current Q1 behaviour); the phone's History shows it on that date
+  ("14:55–00:10 · 0h 20m" for the day) and the next day's Home does not count
+  it. Minutes are floored per session (19.95 → 19). History marks "today"
+  using the device date; a phone in another timezone than the company could
+  show "So far" on a neighbouring row for a few hours (display only).
+- **Protected day edge case.** A missed check-out on a date that is already
+  regularized (a protected status) does not set the "unresolved" flag, so no
+  banner is shown for it. Seen only with test fixtures that put several
+  sessions on one past date; whether it can occur in real use, and whether it
+  should prompt the employee, is part of Q3. **Not changed.**
 - **Push start-up failure on a phone.** A build copy with an injected Firebase
   failure (throw) and an injected hang both started the app (the hang after the
   10 s limit), restored the session, signed out and signed in without a false

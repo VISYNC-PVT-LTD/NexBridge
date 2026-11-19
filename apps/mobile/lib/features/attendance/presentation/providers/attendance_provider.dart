@@ -6,6 +6,7 @@ import '../../../../core/di/providers.dart';
 import '../../../../core/models/attendance.dart';
 import '../../../../core/models/notification.dart';
 import '../../data/sources/attendance_remote_source.dart';
+import '../../domain/session_timer.dart';
 
 final attendanceSourceProvider = Provider<AttendanceRemoteSource>((ref) {
   return AttendanceRemoteSource(ref.watch(dioProvider));
@@ -24,8 +25,24 @@ class AttendanceNotifier extends StateNotifier<AsyncValue<TodayAttendance?>> {
   CheckInState _checkInState = CheckInState.reconciling;
   Timer? _syncTimer;
   Timer? _locationTimer;
+  Timer? _deadlineRetry;
+  final DateTime Function() _now;
+  final List<Duration> _deadlineRetryDelays;
 
-  AttendanceNotifier(this._source, this.settings, this._ref) : super(const AsyncValue.loading());
+  /// Re-checks after the 24-hour deadline while the server is unreachable or
+  /// (clock skew) still reports the overdue session as open. After these the
+  /// regular 5-minute sync, app resume, Retry and pull-to-refresh still apply.
+  static const defaultDeadlineRetryDelays = [
+    Duration(seconds: 10),
+    Duration(seconds: 20),
+    Duration(seconds: 30),
+    Duration(seconds: 60),
+  ];
+
+  AttendanceNotifier(this._source, this.settings, this._ref, {DateTime Function()? clock, List<Duration>? deadlineRetryDelays})
+      : _now = clock ?? DateTime.now,
+        _deadlineRetryDelays = deadlineRetryDelays ?? defaultDeadlineRetryDelays,
+        super(const AsyncValue.loading());
 
   CheckInState get checkInState => _checkInState;
 
@@ -59,6 +76,29 @@ class AttendanceNotifier extends StateNotifier<AsyncValue<TodayAttendance?>> {
       _ref.invalidate(attendanceHistoryProvider);
     }
     _lastHistoryKey = key;
+  }
+
+  /// Called when the device clock reaches the open session's 24-hour deadline.
+  /// The server decides what happened; the app never infers a check-out.
+  ///
+  /// Regression: the app re-synced exactly once at the deadline. If that call
+  /// failed (offline) or the server's clock was a few seconds behind (session
+  /// still open), the screen showed "Checked In" with a 00:00:00 timer, or an
+  /// error, until the next 5-minute sync, app resume or manual retry.
+  Future<void> reconcileAfterDeadline() async {
+    _deadlineRetry?.cancel();
+    var attempt = 0;
+    Future<void> run() async {
+      await reconcile();
+      if (!mounted) return;
+      final t = state.valueOrNull;
+      final unresolved = state.hasError ||
+          (t != null && t.isCheckedIn && missedCheckoutDeadlinePassed(t.currentSessionDeadline, _now()));
+      if (unresolved && attempt < _deadlineRetryDelays.length) {
+        _deadlineRetry = Timer(_deadlineRetryDelays[attempt++], () => run());
+      }
+    }
+    await run();
   }
 
   void _resolveState(TodayAttendance today) {
@@ -190,6 +230,7 @@ class AttendanceNotifier extends StateNotifier<AsyncValue<TodayAttendance?>> {
 
   @override
   void dispose() {
+    _deadlineRetry?.cancel();
     _stopSyncTimer();
     _stopLocationTracking();
     super.dispose();
